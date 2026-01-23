@@ -20,3 +20,17 @@ wheels/
 *.m4v
 *.3gp
 *.ogv
+
+# Data and datasets
+data/
+
+# Model weights
+models/weights/
+*.pt
+*.pth
+*.onnx
+*.weights
+
+# Training outputs
+runs/
+experiments/
