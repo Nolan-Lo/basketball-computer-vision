@@ -5,7 +5,13 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "ipykernel>=7.1.0",
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.1",
     "pandas>=3.0.0",
+    "pathlib>=1.0.1",
+    "pyyaml>=6.0.3",
     "roboflow>=1.2.12",
+    "seaborn>=0.13.2",
     "ultralytics>=8.4.7",
 ]
