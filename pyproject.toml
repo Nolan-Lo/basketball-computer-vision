@@ -1,0 +1,11 @@
+[project]
+name = "capstone"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pandas>=3.0.0",
+    "roboflow>=1.2.12",
+    "ultralytics>=8.4.7",
+]
