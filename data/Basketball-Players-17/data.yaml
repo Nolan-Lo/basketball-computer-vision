@@ -1,0 +1,18 @@
+names:
+- Ball
+- Clock
+- Hoop
+- Overlay
+- Player
+- Ref
+- Scoreboard
+nc: 7
+roboflow:
+  license: CC BY 4.0
+  project: basketball-players-fy4c2-vfsuv
+  url: https://universe.roboflow.com/workspace-5ujvu/basketball-players-fy4c2-vfsuv/dataset/17
+  version: 17
+  workspace: workspace-5ujvu
+test: test/images
+train: train/images
+val: valid/images
