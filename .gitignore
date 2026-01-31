@@ -1,15 +1,49 @@
+# =====================
 # Python-generated files
+# =====================
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+*.so
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+.eggs/
+*.egg
+MANIFEST
 
+# =====================
 # Virtual environments
-.venv
+# =====================
+.venv/
+venv/
+ENV/
+env/
 
+# =====================
+# Jupyter Notebook
+# =====================
+# Checkpoint files (auto-saved backups)
+.ipynb_checkpoints/
+
+# Notebook output cells (optional - uncomment if you want to strip outputs)
+# *.ipynb filter=strip-notebook-output
+
+# Jupyter runtime files
+*.ipynb.bak
+*-checkpoint.ipynb
+
+# IPython
+profile_default/
+ipython_config.py
+
+# Notebook metadata files (VS Code specific)
+.notebook_metadata/
+
+# =====================
 # Video files
+# =====================
 *.mp4
 *.avi
 *.mov
@@ -21,7 +55,10 @@ wheels/
 *.3gp
 *.ogv
 
-# Data and datasets - ignore images/labels but keep structure
+# =====================
+# Data and datasets
+# =====================
+# Ignore images/labels but keep structure
 data/**/images/*
 data/**/labels/*
 !data/**/images/.gitkeep
@@ -35,12 +72,78 @@ data/**/*.cache
 !data/**/README*.md
 
 # Model weights
+# =====================
 models/weights/
 *.pt
 *.pth
 *.onnx
 *.weights
+*.tflite
+*.mlmodel
 
+# =====================
 # Training outputs
+# =====================
 runs/
 experiments/
+wandb/
+mlruns/
+tensorboard_logs/
+
+# =====================
+# Testing & Coverage
+# =====================
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache/
+nosetests.xml
+coverage.xml
+*.cover
+*.py.cover
+.hypothesis/
+.pytest_cache/
+
+# =====================
+# IDE & Editor
+# =====================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# =====================
+# OS-specific
+# =====================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =====================
+# Environment & Secrets
+# =====================
+.env
+.envrc
+*.env.local
+secrets.yaml
+secrets.json
+
+# =====================
+# Type checkers & Linters
+# =====================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pytype/
+
+# =====================
+# Logs
+# =====================
+*.log
+logs/
