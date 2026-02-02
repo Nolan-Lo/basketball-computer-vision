@@ -84,7 +84,6 @@ models/weights/
 # =====================
 # Training outputs
 # =====================
-runs/
 experiments/
 wandb/
 mlruns/
