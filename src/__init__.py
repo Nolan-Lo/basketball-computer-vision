@@ -23,10 +23,13 @@ from .drawers import (
     CourtKeypointDrawer,
     TeamBallControlDrawer,
     FrameNumberDrawer,
+    TacticalViewDrawer,
 )
+from .tactical_view_converter import TacticalViewConverter
+from .homography import Homography
 from .video_utils import read_video, save_video, draw_bounding_box, draw_keypoints_skeleton
 from .utils import read_stub, save_stub
-from .bbox_utils import measure_distance, get_center_of_bbox
+from .bbox_utils import measure_distance, get_center_of_bbox, get_foot_position
 
 __all__ = [
     'BasketballAnalysisPipeline',
@@ -34,11 +37,14 @@ __all__ = [
     'BallTracker',
     'BallAcquisitionDetector',
     'TeamAssigner',
+    'TacticalViewConverter',
+    'Homography',
     'PlayerTracksDrawer',
     'BallTracksDrawer',
     'CourtKeypointDrawer',
     'TeamBallControlDrawer',
     'FrameNumberDrawer',
+    'TacticalViewDrawer',
     'read_video',
     'save_video',
     'draw_bounding_box',
@@ -47,4 +53,5 @@ __all__ = [
     'save_stub',
     'measure_distance',
     'get_center_of_bbox',
+    'get_foot_position',
 ]

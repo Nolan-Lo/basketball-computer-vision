@@ -6,7 +6,8 @@ This script processes basketball videos through a complete analysis pipeline:
 3. Court keypoint detection (YOLOv8-Pose)
 4. Team assignment (CLIP-based classification)
 5. Ball possession detection (proximity + containment heuristics)
-6. Visualization of all detections on output video
+6. Tactical-view projection (homography-based 2D court mapping)
+7. Visualization of all detections on output video
 """
 
 import cv2
@@ -18,6 +19,7 @@ import argparse
 from .trackers import PlayerTracker, BallTracker
 from .ball_acquisition_detector import BallAcquisitionDetector
 from .team_assigner import TeamAssigner
+from .tactical_view_converter import TacticalViewConverter
 from .video_utils import read_video, save_video, add_info_panel
 from .drawers import (
     PlayerTracksDrawer,
@@ -25,6 +27,7 @@ from .drawers import (
     CourtKeypointDrawer,
     TeamBallControlDrawer,
     FrameNumberDrawer,
+    TacticalViewDrawer,
 )
 
 
@@ -38,14 +41,16 @@ class BasketballAnalysisPipeline:
         3. Court keypoint detection (YOLO Pose)
         4. Team assignment (CLIP)
         5. Ball possession detection
-        6. Visualization
+        6. Tactical-view projection (homography → 2D court)
+        7. Visualization
     """
     
     def __init__(self, 
                  player_model_path,
                  court_model_path,
                  team_1_description="white jersey",
-                 team_2_description="dark jersey"):
+                 team_2_description="dark jersey",
+                 court_image_path=None):
         """
         Initialize the pipeline with model paths and team descriptions.
         
@@ -54,6 +59,9 @@ class BasketballAnalysisPipeline:
             court_model_path (str): Path to the court keypoint detection model.
             team_1_description (str): Description of Team 1's jersey.
             team_2_description (str): Description of Team 2's jersey.
+            court_image_path (str | None): Path to the court background image
+                for the tactical mini-map. When *None* the tactical-view
+                stage is skipped.
         """
         print("Initializing Basketball Analysis Pipeline...")
         
@@ -78,6 +86,16 @@ class BasketballAnalysisPipeline:
             team_1_class_name=team_1_description,
             team_2_class_name=team_2_description
         )
+
+        # Tactical-view converter + drawer (optional, needs court image)
+        self.court_image_path = court_image_path
+        if court_image_path and Path(court_image_path).exists():
+            print(f"Loading tactical-view converter (court image: {court_image_path})")
+            self.tactical_view_converter = TacticalViewConverter(court_image_path)
+            self.tactical_view_drawer = TacticalViewDrawer()
+        else:
+            self.tactical_view_converter = None
+            self.tactical_view_drawer = None
 
         # Drawers — each handles one visualization concern
         self.player_tracks_drawer = PlayerTracksDrawer()
@@ -253,9 +271,49 @@ class BasketballAnalysisPipeline:
             print(f"✓ Ball possession detected in {frames_with_possession}/{len(possession)} frames\n")
         
         return possession
+
+    def compute_tactical_view(self, keypoints, player_tracks, verbose=True):
+        """
+        Validate keypoints and project player positions to the tactical court.
+
+        Skipped when no court image was provided at init time.
+
+        Args:
+            keypoints (list): Per-frame keypoints ``[(x, y, conf), ...]``.
+            player_tracks (list): Per-frame player track dicts.
+            verbose (bool): Whether to print progress.
+
+        Returns:
+            list[dict] | None: Per-frame ``{player_id: [x, y]}`` in tactical
+            pixels, or *None* if the tactical view is disabled.
+        """
+        if self.tactical_view_converter is None:
+            if verbose:
+                print("Tactical view: skipped (no court image provided)\n")
+            return None
+
+        if verbose:
+            print("Computing tactical-view positions (homography projection)...")
+
+        validated_kps = self.tactical_view_converter.validate_keypoints(keypoints)
+        tactical_positions = (
+            self.tactical_view_converter.transform_players_to_tactical_view(
+                validated_kps, player_tracks
+            )
+        )
+
+        if verbose:
+            frames_with_data = sum(1 for fp in tactical_positions if fp)
+            print(
+                f"✓ Tactical positions computed for "
+                f"{frames_with_data}/{len(tactical_positions)} frames\n"
+            )
+
+        return tactical_positions
     
     def visualize_detections(self, frames, player_tracks, ball_tracks, keypoints,
-                           team_assignments, possession, show_info=True, verbose=True):
+                           team_assignments, possession, tactical_positions=None,
+                           show_info=True, verbose=True):
         """
         Draw all detections on video frames using the drawer classes.
 
@@ -264,8 +322,9 @@ class BasketballAnalysisPipeline:
             2. Player ellipses with team colours
             3. Ball triangle pointer
             4. Team ball-control percentage overlay
-            5. Frame number
-            6. Info panel (optional)
+            5. Tactical mini-map (if available)
+            6. Frame number
+            7. Info panel (optional)
 
         Args:
             frames (list): List of video frames.
@@ -274,6 +333,8 @@ class BasketballAnalysisPipeline:
             keypoints (list): List of court keypoints per frame.
             team_assignments (list): Per-frame team assignment dicts.
             possession (list[int]): Per-frame possessing player_id (-1 = none).
+            tactical_positions (list[dict] | None): Per-frame tactical-view
+                positions from :meth:`compute_tactical_view`.
             show_info (bool): Whether to show info panel.
             verbose (bool): Whether to print progress.
 
@@ -299,10 +360,27 @@ class BasketballAnalysisPipeline:
             annotated_frames, team_assignments, possession
         )
 
-        # 5. Frame number
+        # 5. Tactical mini-map overlay (if enabled)
+        if (
+            tactical_positions is not None
+            and self.tactical_view_drawer is not None
+            and self.tactical_view_converter is not None
+        ):
+            annotated_frames = self.tactical_view_drawer.draw(
+                annotated_frames,
+                court_image_path=self.court_image_path,
+                width=self.tactical_view_converter.width,
+                height=self.tactical_view_converter.height,
+                tactical_court_keypoints=self.tactical_view_converter.key_points,
+                tactical_player_positions=tactical_positions,
+                player_assignment=team_assignments,
+                ball_acquisition=possession,
+            )
+
+        # 6. Frame number
         annotated_frames = self.frame_number_drawer.draw(annotated_frames)
 
-        # 6. Info panel (optional)
+        # 7. Info panel (optional)
         if show_info:
             for frame_num in range(len(annotated_frames)):
                 frame_players = player_tracks[frame_num] if frame_num < len(player_tracks) else {}
@@ -372,11 +450,13 @@ class BasketballAnalysisPipeline:
         keypoints = self.detect_court_keypoints(frames)
         team_assignments = self.assign_teams(frames, player_tracks, cache_path=team_cache_path)
         possession = self.detect_ball_possession(player_tracks, ball_tracks)
+        tactical_positions = self.compute_tactical_view(keypoints, player_tracks)
         
         # Visualize results
         annotated_frames = self.visualize_detections(
             frames, player_tracks, ball_tracks, keypoints,
-            team_assignments, possession, show_info=show_info
+            team_assignments, possession, tactical_positions=tactical_positions,
+            show_info=show_info
         )
         
         # Save output video
@@ -450,6 +530,9 @@ Examples:
                        help='Directory for cache files (default: runs/cache)')
     parser.add_argument('--no-info', action='store_true',
                        help='Hide info panel on output video')
+    parser.add_argument('--court-image', default=None,
+                       help='Path to court background image for tactical mini-map '
+                            '(omit to skip tactical view)')
     
     args = parser.parse_args()
     
@@ -471,7 +554,8 @@ Examples:
         player_model_path=args.player_model,
         court_model_path=args.court_model,
         team_1_description=args.team1,
-        team_2_description=args.team2
+        team_2_description=args.team2,
+        court_image_path=args.court_image
     )
     
     # Process video

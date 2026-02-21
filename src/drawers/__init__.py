@@ -16,6 +16,7 @@ from .ball_tracks_drawer import BallTracksDrawer
 from .court_keypoints_drawer import CourtKeypointDrawer
 from .team_ball_control_drawer import TeamBallControlDrawer
 from .frame_number_drawer import FrameNumberDrawer
+from .tactical_view_drawer import TacticalViewDrawer
 
 __all__ = [
     "PlayerTracksDrawer",
@@ -23,4 +24,5 @@ __all__ = [
     "CourtKeypointDrawer",
     "TeamBallControlDrawer",
     "FrameNumberDrawer",
+    "TacticalViewDrawer",
 ]

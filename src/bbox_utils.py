@@ -59,3 +59,20 @@ def get_bbox_height(bbox):
         float: Height of the bounding box.
     """
     return bbox[3] - bbox[1]
+
+
+def get_foot_position(bbox):
+    """
+    Get the bottom-center point of a bounding box.
+
+    This approximates a player's foot position on the court, which is the
+    most meaningful anchor for projecting to a 2D tactical view.
+
+    Args:
+        bbox (tuple or list): Bounding box in (x1, y1, x2, y2) format.
+
+    Returns:
+        tuple: (x, y) coordinates of the bottom-center point.
+    """
+    x1, y1, x2, y2 = bbox
+    return ((x1 + x2) / 2, y2)
