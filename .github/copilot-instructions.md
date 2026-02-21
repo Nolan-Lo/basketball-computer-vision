@@ -130,12 +130,52 @@ Advances in computer vision enable automated analysis of broadcast basketball vi
 - `models/`: Trained model weights
   - `pretrained/`: Base models for fine-tuning
 - `notebooks/`: Jupyter notebooks for exploration and development
-- `runs/`: Model training runs and output videos
+- `runs/`: Model training runs, output videos, and cache files
+- `src/`: Core source code package
+  - `src/trackers/`: Player and ball tracking modules (YOLO + ByteTrack)
+  - `src/ball_acquisition_detector.py`: Algorithmic ball possession detection
+  - `src/team_assigner.py`: CLIP-based team classification
+  - `src/pipeline.py`: Main video processing pipeline orchestrating all stages
+  - `src/video_utils.py`: Video I/O, drawing, and visualization utilities
+  - `src/bbox_utils.py`: Bounding box geometry helpers (distance, center, etc.)
+  - `src/utils.py`: Pickle-based caching (stub read/save)
 
 ### Key Files
 - `main.py`: Primary execution script
-- `pyproject.toml`: Project dependencies and configuration
+- `pyproject.toml`: Project dependencies and configuration (includes `supervision` for ByteTrack)
 - `data.yaml`: Dataset configuration files
+
+## Pipeline Architecture
+
+The video analysis pipeline runs in six sequential stages:
+
+1. **Player Tracking** (`PlayerTracker` in `src/trackers/player_tracker.py`)
+   - The fine-tuned YOLO model (`Basketball-Players-17.pt`) detects players in batches of 20 frames.
+   - Raw detections are fed through ByteTrack (`supervision.ByteTrack`) to assign persistent track IDs across frames.
+   - Output: per-frame `{track_id: {"bbox": [x1,y1,x2,y2]}}` dictionaries.
+
+2. **Ball Tracking** (`BallTracker` in `src/trackers/ball_tracker.py`)
+   - The same YOLO model detects the basketball, picking the highest-confidence "Ball" detection per frame.
+   - Outlier removal filters false positives that jump unreasonable distances between frames.
+   - Pandas linear interpolation fills gaps where the ball was occluded.
+   - Output: per-frame `{1: {"bbox": [x1,y1,x2,y2]}}` dictionaries.
+
+3. **Court Keypoint Detection** (YOLO Pose model `court-keypoints.pt`)
+   - A separate fine-tuned YOLO Pose model detects court boundary/anchor keypoints.
+   - Output: per-frame list of `(x, y, confidence)` tuples.
+
+4. **Team Assignment** (`TeamAssigner` in `src/team_assigner.py`)
+   - Crops each tracked player's bounding box from the frame.
+   - Uses CLIP (`patrickjohncyh/fashion-clip`) to match the cropped image against text descriptions of each team's jersey.
+   - Assigns each track ID to Team 1 or Team 2; caches results for reprocessing.
+
+5. **Ball Possession Detection** (`BallAcquisitionDetector` in `src/ball_acquisition_detector.py`)
+   - For each frame, computes containment ratio (ball bbox overlap with player bbox) and minimum distance from ball center to multiple key points on each player's bbox.
+   - Requires a player to hold the ball for a minimum number of consecutive frames before confirming possession.
+   - Output: per-frame player_id with possession, or -1 if unknown.
+
+6. **Visualization** (`video_utils.py`)
+   - Draws team-colored bounding boxes, ball box, ball carrier highlight (magenta + "[BALL]" label), court keypoints, and an info panel with frame stats and possession status.
 
 ## Development Workflow
 
@@ -151,8 +191,9 @@ Advances in computer vision enable automated analysis of broadcast basketball vi
 ## Expected Outputs
 
 ### Per Frame
-- Bounding boxes and class labels for all detected entities
-- Ball position and ball carrier identification
+- Bounding boxes with persistent track IDs for all detected players
+- Ball position (filtered and interpolated)
+- Ball carrier / possession identification (algorithmic, not model-based)
 - Team assignments for each player
 - Court keypoint locations
 - Transformed 2D court coordinates for all entities

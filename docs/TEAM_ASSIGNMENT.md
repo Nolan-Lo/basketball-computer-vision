@@ -27,14 +27,17 @@ The `TeamAssigner` class uses a pre-trained CLIP (Contrastive Language-Image Pre
 ```
 capstone/
 ├── src/
-│   ├── __init__.py           # Package initialization
-│   ├── team_assigner.py      # TeamAssigner class
-│   └── utils.py              # Stub caching utilities
-├── examples/
-│   └── team_assignment_example.py  # Usage examples
+│   ├── __init__.py                # Package initialization
+│   ├── team_assigner.py           # TeamAssigner class
+│   ├── trackers/                  # Detection + tracking modules
+│   │   ├── player_tracker.py      # YOLO + ByteTrack player tracking
+│   │   └── ball_tracker.py        # YOLO ball tracking + interpolation
+│   ├── ball_acquisition_detector.py # Ball possession detection
+│   ├── bbox_utils.py              # Bounding box geometry helpers
+│   └── utils.py                   # Stub caching utilities
 ├── models/
-│   └── Basketball-Players-17.pt    # Player detection model
-└── main.py                   # Main execution script
+│   └── Basketball-Players-17.pt   # Player detection model
+└── main.py                        # Main execution script
 ```
 
 ### Integration Points

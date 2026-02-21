@@ -1,10 +1,12 @@
 """Basketball Video Analysis Pipeline
 
 This script processes basketball videos through a complete analysis pipeline:
-1. Player and ball detection (YOLO)
-2. Court keypoint detection (YOLO Pose)
-3. Team assignment (CLIP-based classification)
-4. Visualization of all detections on output video
+1. Player detection & tracking (YOLO + ByteTrack)
+2. Ball detection, filtering & interpolation (YOLO + temporal smoothing)
+3. Court keypoint detection (YOLOv8-Pose)
+4. Team assignment (CLIP-based classification)
+5. Ball possession detection (proximity + containment heuristics)
+6. Visualization of all detections on output video
 """
 
 import cv2
@@ -13,6 +15,8 @@ from pathlib import Path
 from ultralytics import YOLO
 import argparse
 
+from .trackers import PlayerTracker, BallTracker
+from .ball_acquisition_detector import BallAcquisitionDetector
 from .team_assigner import TeamAssigner
 from .video_utils import (
     read_video, save_video, draw_bounding_box, draw_keypoints_skeleton,
@@ -23,6 +27,14 @@ from .video_utils import (
 class BasketballAnalysisPipeline:
     """
     Complete pipeline for basketball video analysis.
+
+    Pipeline stages:
+        1. Player detection & tracking (YOLO + ByteTrack)
+        2. Ball detection, outlier removal & interpolation
+        3. Court keypoint detection (YOLO Pose)
+        4. Team assignment (CLIP)
+        5. Ball possession detection
+        6. Visualization
     """
     
     def __init__(self, 
@@ -41,12 +53,20 @@ class BasketballAnalysisPipeline:
         """
         print("Initializing Basketball Analysis Pipeline...")
         
-        # Load YOLO models
-        print(f"Loading player detection model: {player_model_path}")
-        self.player_model = YOLO(player_model_path)
-        
+        # Player tracker (YOLO + ByteTrack)
+        print(f"Loading player tracker: {player_model_path}")
+        self.player_tracker = PlayerTracker(player_model_path)
+
+        # Ball tracker (YOLO + temporal filtering)
+        print(f"Loading ball tracker: {player_model_path}")
+        self.ball_tracker = BallTracker(player_model_path)
+
+        # Court keypoint model
         print(f"Loading court keypoint model: {court_model_path}")
         self.court_model = YOLO(court_model_path)
+
+        # Ball possession detector
+        self.ball_acquisition_detector = BallAcquisitionDetector()
         
         # Initialize team assigner
         print("Initializing team assigner...")
@@ -57,62 +77,69 @@ class BasketballAnalysisPipeline:
         
         print("✓ Pipeline initialized successfully\n")
     
-    def detect_players_and_ball(self, frames, verbose=True):
+    def track_players(self, frames, cache_path=None, verbose=True):
         """
-        Detect players and ball in all frames.
+        Detect and track players across all frames using ByteTrack.
         
         Args:
             frames (list): List of video frames.
+            cache_path (str): Optional path to cache file.
             verbose (bool): Whether to print progress.
         
         Returns:
-            list: List of detections per frame.
+            list: List of dicts per frame mapping track_id to {"bbox": [...]}.
         """
         if verbose:
-            print("Step 1/3: Detecting players and ball...")
+            print("Step 1/5: Tracking players (YOLO + ByteTrack)...")
         
-        all_detections = []
-        
-        for frame_num, frame in enumerate(frames):
-            if verbose and frame_num % 30 == 0:
-                print(f"  Processing frame {frame_num}/{len(frames)}")
-            
-            results = self.player_model(frame, verbose=False)
-            
-            frame_detections = {
-                'players': [],
-                'ball': None,
-                'ball_carrier': None
-            }
-            
-            for box in results[0].boxes:
-                bbox = box.xyxy[0].cpu().numpy()
-                conf = float(box.conf[0])
-                class_id = int(box.cls[0])
-                class_name = self.player_model.names[class_id]
-                
-                detection = {
-                    'bbox': bbox,
-                    'confidence': conf,
-                    'class_name': class_name,
-                    'class_id': class_id
-                }
-                
-                if 'player' in class_name.lower():
-                    frame_detections['players'].append(detection)
-                elif 'ball' in class_name.lower() and 'carrier' not in class_name.lower():
-                    if frame_detections['ball'] is None or conf > frame_detections['ball']['confidence']:
-                        frame_detections['ball'] = detection
-                elif 'carrier' in class_name.lower():
-                    if frame_detections['ball_carrier'] is None or conf > frame_detections['ball_carrier']['confidence']:
-                        frame_detections['ball_carrier'] = detection
-            
-            all_detections.append(frame_detections)
+        player_tracks = self.player_tracker.get_object_tracks(
+            frames,
+            read_from_stub=(cache_path is not None),
+            stub_path=str(cache_path) if cache_path else None
+        )
         
         if verbose:
-            print(f"✓ Detected players and ball in {len(frames)} frames\n")
+            total_detections = sum(len(f) for f in player_tracks)
+            print(f"✓ Tracked players across {len(frames)} frames "
+                  f"({total_detections} total detections)\n")
         
-        return all_detections
+        return player_tracks
+    
+    def track_ball(self, frames, cache_path=None, verbose=True):
+        """
+        Detect, filter and interpolate ball positions across all frames.
+        
+        Args:
+            frames (list): List of video frames.
+            cache_path (str): Optional path to cache file.
+            verbose (bool): Whether to print progress.
+        
+        Returns:
+            list: List of dicts per frame with key 1 → {"bbox": [...]}.
+        """
+        if verbose:
+            print("Step 2/5: Tracking ball (YOLO + filtering + interpolation)...")
+        
+        ball_tracks = self.ball_tracker.get_object_tracks(
+            frames,
+            read_from_stub=(cache_path is not None),
+            stub_path=str(cache_path) if cache_path else None
+        )
+        
+        raw_detection_count = sum(1 for f in ball_tracks if f.get(1))
+        
+        # Remove outlier detections (impossible jumps)
+        ball_tracks = self.ball_tracker.remove_wrong_detections(ball_tracks)
+        
+        # Interpolate gaps for smooth tracking
+        ball_tracks = self.ball_tracker.interpolate_ball_positions(ball_tracks)
+        
+        if verbose:
+            print(f"✓ Ball tracked in {len(frames)} frames "
+                  f"(raw detections: {raw_detection_count}, "
+                  f"after interpolation: {len(ball_tracks)})\n")
+        
+        return ball_tracks
     
     def detect_court_keypoints(self, frames, verbose=True):
         """
@@ -126,7 +153,7 @@ class BasketballAnalysisPipeline:
             list: List of keypoint detections per frame.
         """
         if verbose:
-            print("Step 2/3: Detecting court keypoints...")
+            print("Step 3/5: Detecting court keypoints...")
         
         all_keypoints = []
         
@@ -162,55 +189,72 @@ class BasketballAnalysisPipeline:
         
         return all_keypoints
     
-    def assign_teams(self, frames, detections, cache_path=None, verbose=True):
+    def assign_teams(self, frames, player_tracks, cache_path=None, verbose=True):
         """
-        Assign teams to detected players.
+        Assign teams to tracked players.
         
         Args:
             frames (list): List of video frames.
-            detections (list): List of player/ball detections per frame.
+            player_tracks (list): Per-frame dicts mapping track_id to {"bbox": [...]}.
             cache_path (str): Path to cache file for team assignments.
             verbose (bool): Whether to print progress.
         
         Returns:
-            list: List of team assignments per frame.
+            list: List of dicts mapping track_id to team_id per frame.
         """
         if verbose:
-            print("Step 3/3: Assigning teams to players...")
+            print("Step 4/5: Assigning teams to players...")
         
-        # Prepare player tracks for team assigner
-        player_tracks = []
-        for frame_detections in detections:
-            frame_tracks = {}
-            for player_idx, player in enumerate(frame_detections['players']):
-                frame_tracks[player_idx] = {
-                    'bbox': player['bbox']
-                }
-            player_tracks.append(frame_tracks)
-        
-        # Assign teams
+        # player_tracks already in the format TeamAssigner expects
         team_assignments = self.team_assigner.get_player_teams_across_frames(
             video_frames=frames,
             player_tracks=player_tracks,
             read_from_stub=(cache_path is not None),
-            stub_path=cache_path
+            stub_path=str(cache_path) if cache_path else None
         )
         
         if verbose:
             print(f"✓ Assigned teams for {len(frames)} frames\n")
         
         return team_assignments
+
+    def detect_ball_possession(self, player_tracks, ball_tracks, verbose=True):
+        """
+        Determine which player has the ball on each frame.
+        
+        Args:
+            player_tracks (list): Per-frame player track dicts.
+            ball_tracks (list): Per-frame ball track dicts.
+            verbose (bool): Whether to print progress.
+        
+        Returns:
+            list[int]: Per-frame player_id with possession, or -1.
+        """
+        if verbose:
+            print("Step 5/5: Detecting ball possession...")
+        
+        possession = self.ball_acquisition_detector.detect_ball_possession(
+            player_tracks, ball_tracks
+        )
+        
+        if verbose:
+            frames_with_possession = sum(1 for p in possession if p != -1)
+            print(f"✓ Ball possession detected in {frames_with_possession}/{len(possession)} frames\n")
+        
+        return possession
     
-    def visualize_detections(self, frames, detections, keypoints, team_assignments, 
-                           show_info=True, verbose=True):
+    def visualize_detections(self, frames, player_tracks, ball_tracks, keypoints,
+                           team_assignments, possession, show_info=True, verbose=True):
         """
         Draw all detections on video frames.
         
         Args:
             frames (list): List of video frames.
-            detections (list): List of player/ball detections per frame.
+            player_tracks (list): Per-frame player track dicts.
+            ball_tracks (list): Per-frame ball track dicts.
             keypoints (list): List of court keypoints per frame.
-            team_assignments (list): List of team assignments per frame.
+            team_assignments (list): Per-frame team assignment dicts.
+            possession (list[int]): Per-frame possessing player_id (-1 = none).
             show_info (bool): Whether to show info panel.
             verbose (bool): Whether to print progress.
         
@@ -222,18 +266,19 @@ class BasketballAnalysisPipeline:
         
         annotated_frames = []
         
-        # Define court keypoint connections (if your model has specific court structure)
-        # This is a simple example - adjust based on your court keypoint model
-        court_connections = []  # Add connections if needed, e.g., [(0, 1), (1, 2), ...]
+        # Court keypoint connections (adjust if your model defines specific topology)
+        court_connections = []
         
         for frame_num, frame in enumerate(frames):
             if verbose and frame_num % 30 == 0:
                 print(f"  Annotating frame {frame_num}/{len(frames)}")
             
             annotated_frame = frame.copy()
-            frame_detections = detections[frame_num]
-            frame_keypoints = keypoints[frame_num]
+            frame_players = player_tracks[frame_num] if frame_num < len(player_tracks) else {}
+            frame_ball = ball_tracks[frame_num] if frame_num < len(ball_tracks) else {}
+            frame_keypoints = keypoints[frame_num] if frame_num < len(keypoints) else []
             frame_teams = team_assignments[frame_num] if frame_num < len(team_assignments) else {}
+            frame_possession = possession[frame_num] if frame_num < len(possession) else -1
             
             # Draw court keypoints first (background layer)
             if frame_keypoints:
@@ -248,43 +293,43 @@ class BasketballAnalysisPipeline:
             team_1_count = 0
             team_2_count = 0
             
-            for player_idx, player in enumerate(frame_detections['players']):
-                team_id = frame_teams.get(player_idx, 0)
+            for track_id, player_info in frame_players.items():
+                team_id = frame_teams.get(track_id, 0)
                 
                 if team_id == 1:
                     team_1_count += 1
                 elif team_id == 2:
                     team_2_count += 1
                 
-                color = get_team_color(team_id) if team_id > 0 else (0, 255, 0)
-                label = f"Team {team_id}" if team_id > 0 else "Player"
+                # Highlight the ball carrier
+                is_carrier = (track_id == frame_possession)
+                
+                if is_carrier:
+                    color = get_class_color('ball_carrier')
+                    label = f"Team {team_id} [BALL]" if team_id > 0 else "Player [BALL]"
+                    thickness = 3
+                else:
+                    color = get_team_color(team_id) if team_id > 0 else (0, 255, 0)
+                    label = f"Team {team_id}" if team_id > 0 else "Player"
+                    thickness = 2
                 
                 annotated_frame = draw_bounding_box(
                     annotated_frame,
-                    player['bbox'],
+                    player_info['bbox'],
                     color=color,
-                    thickness=2,
+                    thickness=thickness,
                     label=label
                 )
             
             # Draw ball
-            if frame_detections['ball']:
+            ball_info = frame_ball.get(1, {})
+            if ball_info:
                 annotated_frame = draw_bounding_box(
                     annotated_frame,
-                    frame_detections['ball']['bbox'],
+                    ball_info['bbox'],
                     color=get_class_color('ball'),
                     thickness=3,
                     label="Ball"
-                )
-            
-            # Draw ball carrier
-            if frame_detections['ball_carrier']:
-                annotated_frame = draw_bounding_box(
-                    annotated_frame,
-                    frame_detections['ball_carrier']['bbox'],
-                    color=get_class_color('ball_carrier'),
-                    thickness=3,
-                    label="Ball Carrier"
                 )
             
             # Add info panel
@@ -293,7 +338,8 @@ class BasketballAnalysisPipeline:
                     'Frame': f"{frame_num + 1}/{len(frames)}",
                     'Team 1': team_1_count,
                     'Team 2': team_2_count,
-                    'Ball': 'Yes' if frame_detections['ball'] else 'No',
+                    'Ball': 'Yes' if ball_info else 'No',
+                    'Carrier': frame_possession if frame_possession != -1 else 'N/A',
                     'Keypoints': len(frame_keypoints)
                 }
                 annotated_frame = add_info_panel(annotated_frame, info, position='top-right')
@@ -331,18 +377,25 @@ class BasketballAnalysisPipeline:
         if cache_dir:
             cache_dir = Path(cache_dir)
             cache_dir.mkdir(parents=True, exist_ok=True)
+            player_cache_path = cache_dir / f"{Path(video_path).stem}_player_tracks.pkl"
+            ball_cache_path = cache_dir / f"{Path(video_path).stem}_ball_tracks.pkl"
             team_cache_path = cache_dir / f"{Path(video_path).stem}_teams.pkl"
         else:
+            player_cache_path = None
+            ball_cache_path = None
             team_cache_path = None
         
         # Run pipeline steps
-        detections = self.detect_players_and_ball(frames)
+        player_tracks = self.track_players(frames, cache_path=player_cache_path)
+        ball_tracks = self.track_ball(frames, cache_path=ball_cache_path)
         keypoints = self.detect_court_keypoints(frames)
-        team_assignments = self.assign_teams(frames, detections, cache_path=team_cache_path)
+        team_assignments = self.assign_teams(frames, player_tracks, cache_path=team_cache_path)
+        possession = self.detect_ball_possession(player_tracks, ball_tracks)
         
         # Visualize results
         annotated_frames = self.visualize_detections(
-            frames, detections, keypoints, team_assignments, show_info=show_info
+            frames, player_tracks, ball_tracks, keypoints,
+            team_assignments, possession, show_info=show_info
         )
         
         # Save output video
@@ -350,9 +403,10 @@ class BasketballAnalysisPipeline:
         save_video(annotated_frames, output_path, fps=fps)
         
         # Calculate statistics
-        total_players = sum(len(d['players']) for d in detections)
-        total_ball_detections = sum(1 for d in detections if d['ball'] is not None)
+        total_players = sum(len(f) for f in player_tracks)
+        total_ball_detections = sum(1 for f in ball_tracks if f.get(1))
         total_keypoints = sum(len(k) for k in keypoints)
+        frames_with_possession = sum(1 for p in possession if p != -1)
         
         stats = {
             'total_frames': len(frames),
@@ -361,7 +415,8 @@ class BasketballAnalysisPipeline:
             'total_players': total_players,
             'avg_players_per_frame': total_players / len(frames),
             'ball_detection_rate': total_ball_detections / len(frames) * 100,
-            'avg_keypoints_per_frame': total_keypoints / len(frames) if frames else 0
+            'avg_keypoints_per_frame': total_keypoints / len(frames) if frames else 0,
+            'possession_detection_rate': frames_with_possession / len(frames) * 100
         }
         
         print(f"\n{'='*60}")
@@ -371,6 +426,7 @@ class BasketballAnalysisPipeline:
         print(f"Avg Players/Frame: {stats['avg_players_per_frame']:.1f}")
         print(f"Ball Detection Rate: {stats['ball_detection_rate']:.1f}%")
         print(f"Avg Court Keypoints/Frame: {stats['avg_keypoints_per_frame']:.1f}")
+        print(f"Ball Possession Rate: {stats['possession_detection_rate']:.1f}%")
         print(f"Output saved to: {output_path}")
         print(f"{'='*60}\n")
         

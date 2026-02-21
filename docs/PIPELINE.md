@@ -10,28 +10,43 @@ This pipeline processes basketball videos through multiple detection and analysi
 Input Video
     ↓
 ┌───────────────────────────────────┐
-│  Step 1: Player & Ball Detection  │  (YOLOv8)
+│  Step 1: Player Tracking          │  (YOLO + ByteTrack)
 │  - Detect all players             │
-│  - Detect basketball              │
-│  - Detect ball carrier            │
+│  - Assign persistent track IDs    │
+│  - Cache results for reuse        │
 └───────────────────────────────────┘
     ↓
 ┌───────────────────────────────────┐
-│  Step 2: Court Keypoint Detection │  (YOLOv8-Pose)
+│  Step 2: Ball Tracking            │  (YOLO + Temporal Filtering)
+│  - Detect basketball              │
+│  - Remove outlier detections      │
+│  - Interpolate missing positions  │
+└───────────────────────────────────┘
+    ↓
+┌───────────────────────────────────┐
+│  Step 3: Court Keypoint Detection │  (YOLOv8-Pose)
 │  - Detect court boundary points   │
 │  - Detect key court features      │
 └───────────────────────────────────┘
     ↓
 ┌───────────────────────────────────┐
-│  Step 3: Team Assignment          │  (CLIP)
+│  Step 4: Team Assignment          │  (CLIP)
 │  - Classify players by jersey     │
-│  - Assign to Team 1 or Team 2     │
+│  - Assign to Team 1 or Team 2    │
 └───────────────────────────────────┘
     ↓
 ┌───────────────────────────────────┐
-│  Step 4: Visualization            │
+│  Step 5: Ball Possession          │  (Proximity + Containment)
+│  - Determine ball carrier         │
+│  - Require consecutive frames     │
+│  - Combine distance + overlap     │
+└───────────────────────────────────┘
+    ↓
+┌───────────────────────────────────┐
+│  Step 6: Visualization            │
 │  - Draw bounding boxes            │
 │  - Color-code by team             │
+│  - Highlight ball carrier         │
 │  - Show court keypoints           │
 │  - Add info panel                 │
 └───────────────────────────────────┘
@@ -205,26 +220,40 @@ python -m src.pipeline \
 
 ## Pipeline Components
 
-### 1. Player & Ball Detection (`Basketball-Players-17.pt`)
-- Trained on basketball-specific dataset
-- Detects: players, basketball, ball carrier
-- Output: Bounding boxes with confidence scores
+### 1. Player Tracking (`PlayerTracker` + `Basketball-Players-17.pt`)
+- YOLO detection with batch processing
+- ByteTrack multi-object tracking for persistent player IDs across frames
+- Output: Per-frame `{track_id: {"bbox": [x1, y1, x2, y2]}}` dictionaries
+- Results are cached to pickle files for fast reprocessing
 
-### 2. Court Keypoint Detection (`court-keypoints.pt`)
+### 2. Ball Tracking (`BallTracker` + `Basketball-Players-17.pt`)
+- YOLO detection picking highest-confidence "Ball" per frame
+- Outlier removal: filters detections that jump unreasonable distances
+- Temporal interpolation: fills gaps where ball was occluded using pandas interpolation
+- Output: Per-frame `{1: {"bbox": [x1, y1, x2, y2]}}` dictionaries
+
+### 3. Court Keypoint Detection (`court-keypoints.pt`)
 - YOLO pose model for court features
 - Detects: court boundary points, key locations
 - Output: (x, y, confidence) keypoints
 
-### 3. Team Assignment (`TeamAssigner`)
+### 4. Team Assignment (`TeamAssigner`)
 - Uses CLIP vision-language model
 - Classifies players by jersey appearance
 - Maintains consistent IDs across frames
 - Auto-caches results for performance
 
-### 4. Visualization (`video_utils`)
+### 5. Ball Possession Detection (`BallAcquisitionDetector`)
+- Combines bounding-box containment ratio with distance metrics
+- Uses adaptive key points on player bounding boxes for accurate distance measurement
+- Requires consecutive-frame confirmation (`min_frames=11`) to reduce flicker
+- Output: Per-frame player_id with possession, or -1
+
+### 6. Visualization (`video_utils`)
 - Draws all detections on frames
 - Color-codes by team and object type
-- Adds informative overlays
+- Highlights ball carrier with distinct color and label
+- Adds informative overlays with possession status
 - Exports to MP4 video
 
 ## File Structure
@@ -234,14 +263,20 @@ capstone/
 ├── main.py                         # Simple entry point
 ├── src/                            # Source code
 │   ├── pipeline.py                 # Main pipeline script
-│   ├── team_assigner.py            # Team classification
+│   ├── trackers/                   # Detection + tracking modules
+│   │   ├── __init__.py
+│   │   ├── player_tracker.py       # YOLO + ByteTrack player tracking
+│   │   └── ball_tracker.py         # YOLO ball tracking + interpolation
+│   ├── ball_acquisition_detector.py # Ball possession detection
+│   ├── team_assigner.py            # Team classification (CLIP)
 │   ├── video_utils.py              # Video I/O and drawing
+│   ├── bbox_utils.py               # Bounding box geometry helpers
 │   └── utils.py                    # Caching utilities
 ├── models/
-│   ├── Basketball-Players-17.pt # Player/ball detector
-│   └── court-keypoints.pt       # Court keypoint detector
-├── input_videos/                # Put input videos here
-└── runs/                        # Output videos and cache
+│   ├── Basketball-Players-17.pt    # Player/ball detector
+│   └── court-keypoints.pt          # Court keypoint detector
+├── input_videos/                   # Put input videos here
+└── runs/                           # Output videos and cache
 ```
 
 ## Troubleshooting

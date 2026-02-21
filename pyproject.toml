@@ -15,6 +15,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "roboflow>=1.2.12",
     "seaborn>=0.13.2",
+    "supervision>=0.25.0",
     "torch>=2.6.0",
     "transformers>=4.48.0",
     "ultralytics>=8.4.7",

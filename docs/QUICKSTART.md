@@ -6,10 +6,12 @@ Your pipeline is ready to process basketball videos through complete analysis:
 
 ### What the Pipeline Does
 
-1. **Detects Players & Ball** using your trained `Basketball-Players-17.pt` model
-2. **Detects Court Keypoints** using your trained `court-keypoints.pt` model  
-3. **Assigns Teams** to players using AI-powered jersey classification
-4. **Outputs Annotated Video** with all detections visualized in a single video
+1. **Tracks Players** using YOLO + ByteTrack for persistent player IDs across frames
+2. **Tracks Ball** using YOLO with outlier filtering and temporal interpolation
+3. **Detects Court Keypoints** using your trained `court-keypoints.pt` model  
+4. **Assigns Teams** to players using AI-powered jersey classification (CLIP)
+5. **Detects Ball Possession** algorithmically from player/ball proximity and containment
+6. **Outputs Annotated Video** with all detections, team colors, and ball carrier highlighted
 
 ## How to Run
 
@@ -38,9 +40,9 @@ The output video will show:
 - ⬜ **White boxes** = Team 1 players
 - 🟧 **Orange boxes** = Team 2 players  
 - 🟨 **Yellow boxes** = Basketball
-- 🟪 **Magenta boxes** = Ball carrier
+- 🟪 **Magenta boxes** = Ball carrier (algorithmically detected)
 - 🟡 **Yellow circles** = Court keypoints
-- 📊 **Info panel** (top-right) with frame stats
+- 📊 **Info panel** (top-right) with frame stats, ball carrier ID, and possession status
 
 ## Key Features
 
@@ -154,11 +156,16 @@ capstone/
 ├── main.py                  # Quick start script
 ├── src/                    # Source code ⭐
 │   ├── pipeline.py        # Main pipeline script
-│   ├── team_assigner.py  # Team classification
+│   ├── trackers/          # Detection + tracking
+│   │   ├── player_tracker.py  # YOLO + ByteTrack
+│   │   └── ball_tracker.py    # YOLO + interpolation
+│   ├── ball_acquisition_detector.py  # Ball possession
+│   ├── team_assigner.py  # Team classification (CLIP)
 │   ├── video_utils.py    # Video processing
+│   ├── bbox_utils.py     # Bounding box geometry
 │   └── utils.py          # Caching
 ├── models/
-│   ├── Basketball-Players-17.pt    # Player detector
+│   ├── Basketball-Players-17.pt    # Player/ball detector
 │   └── court-keypoints.pt          # Court detector
 ├── input_videos/           # Put videos here
 └── runs/                   # Outputs go here
