@@ -18,9 +18,13 @@ import argparse
 from .trackers import PlayerTracker, BallTracker
 from .ball_acquisition_detector import BallAcquisitionDetector
 from .team_assigner import TeamAssigner
-from .video_utils import (
-    read_video, save_video, draw_bounding_box, draw_keypoints_skeleton,
-    add_info_panel, get_team_color, get_class_color
+from .video_utils import read_video, save_video, add_info_panel
+from .drawers import (
+    PlayerTracksDrawer,
+    BallTracksDrawer,
+    CourtKeypointDrawer,
+    TeamBallControlDrawer,
+    FrameNumberDrawer,
 )
 
 
@@ -74,6 +78,13 @@ class BasketballAnalysisPipeline:
             team_1_class_name=team_1_description,
             team_2_class_name=team_2_description
         )
+
+        # Drawers — each handles one visualization concern
+        self.player_tracks_drawer = PlayerTracksDrawer()
+        self.ball_tracks_drawer = BallTracksDrawer()
+        self.court_keypoint_drawer = CourtKeypointDrawer()
+        self.team_ball_control_drawer = TeamBallControlDrawer()
+        self.frame_number_drawer = FrameNumberDrawer()
         
         print("✓ Pipeline initialized successfully\n")
     
@@ -246,8 +257,16 @@ class BasketballAnalysisPipeline:
     def visualize_detections(self, frames, player_tracks, ball_tracks, keypoints,
                            team_assignments, possession, show_info=True, verbose=True):
         """
-        Draw all detections on video frames.
-        
+        Draw all detections on video frames using the drawer classes.
+
+        Drawing order (back → front):
+            1. Court keypoints (background layer)
+            2. Player ellipses with team colours
+            3. Ball triangle pointer
+            4. Team ball-control percentage overlay
+            5. Frame number
+            6. Info panel (optional)
+
         Args:
             frames (list): List of video frames.
             player_tracks (list): Per-frame player track dicts.
@@ -257,98 +276,60 @@ class BasketballAnalysisPipeline:
             possession (list[int]): Per-frame possessing player_id (-1 = none).
             show_info (bool): Whether to show info panel.
             verbose (bool): Whether to print progress.
-        
+
         Returns:
             list: List of annotated frames.
         """
         if verbose:
             print("Visualizing detections on frames...")
-        
-        annotated_frames = []
-        
-        # Court keypoint connections (adjust if your model defines specific topology)
-        court_connections = []
-        
-        for frame_num, frame in enumerate(frames):
-            if verbose and frame_num % 30 == 0:
-                print(f"  Annotating frame {frame_num}/{len(frames)}")
-            
-            annotated_frame = frame.copy()
-            frame_players = player_tracks[frame_num] if frame_num < len(player_tracks) else {}
-            frame_ball = ball_tracks[frame_num] if frame_num < len(ball_tracks) else {}
-            frame_keypoints = keypoints[frame_num] if frame_num < len(keypoints) else []
-            frame_teams = team_assignments[frame_num] if frame_num < len(team_assignments) else {}
-            frame_possession = possession[frame_num] if frame_num < len(possession) else -1
-            
-            # Draw court keypoints first (background layer)
-            if frame_keypoints:
-                annotated_frame = draw_keypoints_skeleton(
-                    annotated_frame, 
-                    frame_keypoints,
-                    connections=court_connections,
-                    color=(0, 255, 255)  # Yellow
-                )
-            
-            # Draw players with team colors
-            team_1_count = 0
-            team_2_count = 0
-            
-            for track_id, player_info in frame_players.items():
-                team_id = frame_teams.get(track_id, 0)
-                
-                if team_id == 1:
-                    team_1_count += 1
-                elif team_id == 2:
-                    team_2_count += 1
-                
-                # Highlight the ball carrier
-                is_carrier = (track_id == frame_possession)
-                
-                if is_carrier:
-                    color = get_class_color('ball_carrier')
-                    label = f"Team {team_id} [BALL]" if team_id > 0 else "Player [BALL]"
-                    thickness = 3
-                else:
-                    color = get_team_color(team_id) if team_id > 0 else (0, 255, 0)
-                    label = f"Team {team_id}" if team_id > 0 else "Player"
-                    thickness = 2
-                
-                annotated_frame = draw_bounding_box(
-                    annotated_frame,
-                    player_info['bbox'],
-                    color=color,
-                    thickness=thickness,
-                    label=label
-                )
-            
-            # Draw ball
-            ball_info = frame_ball.get(1, {})
-            if ball_info:
-                annotated_frame = draw_bounding_box(
-                    annotated_frame,
-                    ball_info['bbox'],
-                    color=get_class_color('ball'),
-                    thickness=3,
-                    label="Ball"
-                )
-            
-            # Add info panel
-            if show_info:
+
+        # 1. Court keypoints (background layer)
+        annotated_frames = self.court_keypoint_drawer.draw(frames, keypoints)
+
+        # 2. Player ellipses with team colours + ball carrier triangle
+        annotated_frames = self.player_tracks_drawer.draw(
+            annotated_frames, player_tracks, team_assignments, possession
+        )
+
+        # 3. Ball triangle pointer
+        annotated_frames = self.ball_tracks_drawer.draw(annotated_frames, ball_tracks)
+
+        # 4. Team ball-control percentage overlay
+        annotated_frames = self.team_ball_control_drawer.draw(
+            annotated_frames, team_assignments, possession
+        )
+
+        # 5. Frame number
+        annotated_frames = self.frame_number_drawer.draw(annotated_frames)
+
+        # 6. Info panel (optional)
+        if show_info:
+            for frame_num in range(len(annotated_frames)):
+                frame_players = player_tracks[frame_num] if frame_num < len(player_tracks) else {}
+                frame_ball = ball_tracks[frame_num] if frame_num < len(ball_tracks) else {}
+                frame_keypoints_data = keypoints[frame_num] if frame_num < len(keypoints) else []
+                frame_teams = team_assignments[frame_num] if frame_num < len(team_assignments) else {}
+                frame_possession = possession[frame_num] if frame_num < len(possession) else -1
+
+                team_1_count = sum(1 for t in frame_teams.values() if t == 1)
+                team_2_count = sum(1 for t in frame_teams.values() if t == 2)
+                ball_info = frame_ball.get(1, {})
+
                 info = {
                     'Frame': f"{frame_num + 1}/{len(frames)}",
                     'Team 1': team_1_count,
                     'Team 2': team_2_count,
                     'Ball': 'Yes' if ball_info else 'No',
                     'Carrier': frame_possession if frame_possession != -1 else 'N/A',
-                    'Keypoints': len(frame_keypoints)
+                    'Keypoints': len(frame_keypoints_data)
                 }
-                annotated_frame = add_info_panel(annotated_frame, info, position='top-right')
-            
-            annotated_frames.append(annotated_frame)
-        
+                annotated_frames[frame_num] = add_info_panel(
+                    annotated_frames[frame_num], info, position='top-right'
+                )
+
         if verbose:
             print(f"✓ Annotated {len(frames)} frames\n")
-        
+
         return annotated_frames
     
     def process_video(self, video_path, output_path, cache_dir=None, show_info=True):

@@ -5,6 +5,7 @@ This package contains core modules for basketball video analysis:
 - trackers: Player and ball tracking (YOLO + ByteTrack)
 - ball_acquisition_detector: Determines which player has ball possession
 - team_assigner: Assigns players to teams based on jersey colors
+- drawers: Visualization drawer classes (players, ball, keypoints, stats)
 - video_utils: Video I/O and visualization utilities
 - utils: Utility functions for caching and data handling
 - bbox_utils: Bounding box geometry helpers
@@ -16,6 +17,13 @@ from .pipeline import BasketballAnalysisPipeline
 from .trackers import PlayerTracker, BallTracker
 from .ball_acquisition_detector import BallAcquisitionDetector
 from .team_assigner import TeamAssigner
+from .drawers import (
+    PlayerTracksDrawer,
+    BallTracksDrawer,
+    CourtKeypointDrawer,
+    TeamBallControlDrawer,
+    FrameNumberDrawer,
+)
 from .video_utils import read_video, save_video, draw_bounding_box, draw_keypoints_skeleton
 from .utils import read_stub, save_stub
 from .bbox_utils import measure_distance, get_center_of_bbox
@@ -26,6 +34,11 @@ __all__ = [
     'BallTracker',
     'BallAcquisitionDetector',
     'TeamAssigner',
+    'PlayerTracksDrawer',
+    'BallTracksDrawer',
+    'CourtKeypointDrawer',
+    'TeamBallControlDrawer',
+    'FrameNumberDrawer',
     'read_video',
     'save_video',
     'draw_bounding_box',
