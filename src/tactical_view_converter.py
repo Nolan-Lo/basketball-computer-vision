@@ -4,8 +4,8 @@ Maps player positions from broadcast-camera (video-frame) coordinates to
 a standardised bird's-eye 2D court via homography, using detected court
 keypoints as correspondences.
 
-The 18 reference keypoints encode the official FIBA court geometry
-(28 × 15 m) scaled to a fixed pixel canvas (300 × 161 px).
+The 18 reference keypoints encode the official NBA court geometry
+(94 ft × 50 ft / 28.65 × 15.24 m) scaled to a fixed pixel canvas (300 × 161 px).
 
 Pipeline integration
 --------------------
@@ -36,20 +36,25 @@ class TacticalViewConverter:
         self.width = 300
         self.height = 161
 
-        # Real-world court dimensions (FIBA)
-        self.actual_width_in_meters = 28
-        self.actual_height_in_meters = 15
+        # Real-world court dimensions (NBA)
+        self.actual_width_in_meters = 28.65   # 94 ft
+        self.actual_height_in_meters = 15.24  # 50 ft
 
         # 18 reference keypoints in tactical-view pixel coordinates.
         # The ordering **must** match the keypoint indices produced by the
         # court-keypoint YOLO Pose model.
+        #
+        # NBA-specific measurements used:
+        #   - Free-throw line: 5.79 m (19 ft) from baseline
+        #   - Lane width: 4.88 m (16 ft), centered → edges at 5.18 m and 10.06 m
+        #   - Sideline mark: 0.91 m (~3 ft); mirror at 14.33 m
         self.key_points = [
             # --- left edge (indices 0-5) ---
             (0, 0),
             (0, int((0.91 / self.actual_height_in_meters) * self.height)),
             (0, int((5.18 / self.actual_height_in_meters) * self.height)),
-            (0, int((10 / self.actual_height_in_meters) * self.height)),
-            (0, int((14.1 / self.actual_height_in_meters) * self.height)),
+            (0, int((10.06 / self.actual_height_in_meters) * self.height)),
+            (0, int((14.33 / self.actual_height_in_meters) * self.height)),
             (0, int(self.height)),
             # --- middle line (indices 6-7) ---
             (int(self.width / 2), self.height),
@@ -61,12 +66,12 @@ class TacticalViewConverter:
             ),
             (
                 int((5.79 / self.actual_width_in_meters) * self.width),
-                int((10 / self.actual_height_in_meters) * self.height),
+                int((10.06 / self.actual_height_in_meters) * self.height),
             ),
             # --- right edge (indices 10-15) ---
             (self.width, int(self.height)),
-            (self.width, int((14.1 / self.actual_height_in_meters) * self.height)),
-            (self.width, int((10 / self.actual_height_in_meters) * self.height)),
+            (self.width, int((14.33 / self.actual_height_in_meters) * self.height)),
+            (self.width, int((10.06 / self.actual_height_in_meters) * self.height)),
             (self.width, int((5.18 / self.actual_height_in_meters) * self.height)),
             (self.width, int((0.91 / self.actual_height_in_meters) * self.height)),
             (self.width, 0),
@@ -89,7 +94,7 @@ class TacticalViewConverter:
                     )
                     * self.width
                 ),
-                int((10 / self.actual_height_in_meters) * self.height),
+                int((10.06 / self.actual_height_in_meters) * self.height),
             ),
         ]
 

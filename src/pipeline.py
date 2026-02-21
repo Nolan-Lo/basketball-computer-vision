@@ -530,9 +530,9 @@ Examples:
                        help='Directory for cache files (default: runs/cache)')
     parser.add_argument('--no-info', action='store_true',
                        help='Hide info panel on output video')
-    parser.add_argument('--court-image', default=None,
+    parser.add_argument('--court-image', default='images/basketball_court.png',
                        help='Path to court background image for tactical mini-map '
-                            '(omit to skip tactical view)')
+                            '(default: images/basketball_court.png)')
     
     args = parser.parse_args()
     

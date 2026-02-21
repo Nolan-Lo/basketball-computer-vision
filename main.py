@@ -23,6 +23,7 @@ def main():
     output_video = "runs/pipeline_output/video1_annotated.mp4"
     player_model = "models/Basketball-Players-17.pt"
     court_model = "models/court-keypoints.pt"
+    court_image = "images/basketball_court.png"
     
     # Check if input video exists
     if not Path(input_video).exists():
@@ -43,10 +44,15 @@ def main():
         print(f"Please ensure the model is trained and saved to: {court_model}\n")
         return
     
+    if not Path(court_image).exists():
+        print(f"⚠ Court image not found: {court_image} (tactical view will be disabled)")
+        court_image = None
+    
     print("✓ All required files found")
     print(f"  Input: {input_video}")
     print(f"  Player Model: {player_model}")
     print(f"  Court Model: {court_model}")
+    print(f"  Court Image: {court_image or 'N/A (tactical view disabled)'}")
     print(f"  Output: {output_video}\n")
     
     # Initialize and run pipeline
@@ -55,7 +61,8 @@ def main():
             player_model_path=player_model,
             court_model_path=court_model,
             team_1_description="white jersey",
-            team_2_description="dark jersey"
+            team_2_description="dark jersey",
+            court_image_path=court_image
         )
         
         pipeline.process_video(
