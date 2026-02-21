@@ -25,7 +25,6 @@ from .drawers import (
     PlayerTracksDrawer,
     BallTracksDrawer,
     CourtKeypointDrawer,
-    TeamBallControlDrawer,
     FrameNumberDrawer,
     TacticalViewDrawer,
 )
@@ -77,7 +76,7 @@ class BasketballAnalysisPipeline:
         print(f"Loading court keypoint model: {court_model_path}")
         self.court_model = YOLO(court_model_path)
 
-        # Ball possession detector
+        # Ball possession detector (used for ball-carrier highlighting)
         self.ball_acquisition_detector = BallAcquisitionDetector()
         
         # Initialize team assigner
@@ -101,7 +100,6 @@ class BasketballAnalysisPipeline:
         self.player_tracks_drawer = PlayerTracksDrawer()
         self.ball_tracks_drawer = BallTracksDrawer()
         self.court_keypoint_drawer = CourtKeypointDrawer()
-        self.team_ball_control_drawer = TeamBallControlDrawer()
         self.frame_number_drawer = FrameNumberDrawer()
         
         print("✓ Pipeline initialized successfully\n")
@@ -170,16 +168,26 @@ class BasketballAnalysisPipeline:
         
         return ball_tracks
     
-    def detect_court_keypoints(self, frames, verbose=True):
+    def detect_court_keypoints(self, frames, confidence_threshold=0.5, verbose=True):
         """
         Detect court keypoints in all frames.
         
+        Only keypoints with confidence above *confidence_threshold* are
+        kept; the rest are zeroed-out so they don't pollute the
+        homography or the visualisation.
+
         Args:
             frames (list): List of video frames.
+            confidence_threshold (float): Minimum keypoint confidence to
+                consider a detection valid (0-1). Lower values keep more
+                (potentially noisy) keypoints; higher values keep only
+                high-confidence ones.
             verbose (bool): Whether to print progress.
         
         Returns:
-            list: List of keypoint detections per frame.
+            list: List of keypoint detections per frame.  Each entry is
+                a list of ``(x, y, confidence)`` tuples; filtered-out
+                keypoints are stored as ``(0, 0, 0)``.
         """
         if verbose:
             print("Step 3/5: Detecting court keypoints...")
@@ -202,19 +210,31 @@ class BasketballAnalysisPipeline:
                     # Get the first detection's keypoints
                     kpts = keypoints_data[0]  # Shape: (num_keypoints, 2)
                     
-                    # Add confidence if available
                     if hasattr(results[0].keypoints, 'conf'):
                         conf = results[0].keypoints.conf.cpu().numpy()[0]
                         for i, (x, y) in enumerate(kpts):
-                            frame_keypoints.append((x, y, conf[i]))
+                            # Zero-out low-confidence or off-screen keypoints
+                            if conf[i] >= confidence_threshold and x > 0 and y > 0:
+                                frame_keypoints.append((float(x), float(y), float(conf[i])))
+                            else:
+                                frame_keypoints.append((0.0, 0.0, 0.0))
                     else:
                         for x, y in kpts:
-                            frame_keypoints.append((x, y, 1.0))
+                            if x > 0 and y > 0:
+                                frame_keypoints.append((float(x), float(y), 1.0))
+                            else:
+                                frame_keypoints.append((0.0, 0.0, 0.0))
             
             all_keypoints.append(frame_keypoints)
         
         if verbose:
-            print(f"✓ Detected court keypoints in {len(frames)} frames\n")
+            total_valid = sum(
+                sum(1 for kp in fkp if kp[0] > 0)
+                for fkp in all_keypoints
+            )
+            print(f"✓ Detected court keypoints in {len(frames)} frames "
+                  f"({total_valid} valid keypoints total, "
+                  f"conf >= {confidence_threshold})\n")
         
         return all_keypoints
     
@@ -274,12 +294,15 @@ class BasketballAnalysisPipeline:
 
     def compute_tactical_view(self, keypoints, player_tracks, verbose=True):
         """
-        Validate keypoints and project player positions to the tactical court.
+        Project player positions to the tactical court.
 
-        Skipped when no court image was provided at init time.
+        Assumes *keypoints* have already been validated/remapped by
+        :meth:`TacticalViewConverter.validate_keypoints`.  Skipped when
+        no court image was provided at init time.
 
         Args:
-            keypoints (list): Per-frame keypoints ``[(x, y, conf), ...]``.
+            keypoints (list): Per-frame keypoints ``[(x, y, conf), ...]``
+                (already validated).
             player_tracks (list): Per-frame player track dicts.
             verbose (bool): Whether to print progress.
 
@@ -295,10 +318,9 @@ class BasketballAnalysisPipeline:
         if verbose:
             print("Computing tactical-view positions (homography projection)...")
 
-        validated_kps = self.tactical_view_converter.validate_keypoints(keypoints)
         tactical_positions = (
             self.tactical_view_converter.transform_players_to_tactical_view(
-                validated_kps, player_tracks
+                keypoints, player_tracks
             )
         )
 
@@ -355,10 +377,7 @@ class BasketballAnalysisPipeline:
         # 3. Ball triangle pointer
         annotated_frames = self.ball_tracks_drawer.draw(annotated_frames, ball_tracks)
 
-        # 4. Team ball-control percentage overlay
-        annotated_frames = self.team_ball_control_drawer.draw(
-            annotated_frames, team_assignments, possession
-        )
+        # 4. (ball-control overlay removed)
 
         # 5. Tactical mini-map overlay (if enabled)
         if (
@@ -450,6 +469,12 @@ class BasketballAnalysisPipeline:
         keypoints = self.detect_court_keypoints(frames)
         team_assignments = self.assign_teams(frames, player_tracks, cache_path=team_cache_path)
         possession = self.detect_ball_possession(player_tracks, ball_tracks)
+
+        # Validate/remap keypoints before any downstream use so both the
+        # tactical-view projection and the keypoint drawer see clean data.
+        if self.tactical_view_converter is not None:
+            keypoints = self.tactical_view_converter.validate_keypoints(keypoints)
+
         tactical_positions = self.compute_tactical_view(keypoints, player_tracks)
         
         # Visualize results

@@ -19,8 +19,8 @@ def main():
     print("="*70 + "\n")
     
     # Default configuration
-    input_video = "input_videos/video_1.mp4"
-    output_video = "runs/pipeline_output/video1_annotated.mp4"
+    input_video = "input_videos/video_2.mp4"
+    output_video = "runs/pipeline_output/video2_v6.mp4"
     player_model = "models/Basketball-Players-17.pt"
     court_model = "models/court-keypoints.pt"
     court_image = "images/basketball_court.png"

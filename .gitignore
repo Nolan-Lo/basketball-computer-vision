@@ -88,6 +88,7 @@ experiments/
 wandb/
 mlruns/
 tensorboard_logs/
+cache/
 
 # =====================
 # Testing & Coverage

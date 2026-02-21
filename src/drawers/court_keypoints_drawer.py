@@ -1,7 +1,8 @@
 """Drawer for court keypoint visualizations.
 
 Uses the ``supervision`` library's vertex annotators to draw labelled
-court keypoints on each frame.
+court keypoints on each frame.  Only keypoints with non-zero coordinates
+(i.e. those that passed confidence filtering) are drawn.
 """
 
 import numpy as np
@@ -11,6 +12,9 @@ import supervision as sv
 class CourtKeypointDrawer:
     """
     Draw court keypoints and their numeric labels on frames.
+
+    Only keypoints with non-zero coordinates are drawn, so off-screen or
+    low-confidence keypoints (zeroed-out during detection) are ignored.
 
     Attributes:
         keypoint_color (str): Hex colour for the keypoint dots.
@@ -30,8 +34,8 @@ class CourtKeypointDrawer:
         Args:
             frames (list): Video frames (NumPy arrays).
             court_keypoints (list): Per-frame list of ``(x, y, confidence)``
-                tuples (as produced by ``detect_court_keypoints`` in the
-                pipeline).
+                tuples.  Keypoints with ``x == 0`` and ``y == 0`` are
+                treated as absent and are **not** drawn.
 
         Returns:
             list: Annotated copies of the input frames.
@@ -56,9 +60,20 @@ class CourtKeypointDrawer:
                 output_frames.append(annotated_frame)
                 continue
 
+            # Filter to only valid (non-zero) keypoints
+            valid_indices = [
+                i for i, kp in enumerate(raw_keypoints)
+                if kp[0] > 0 and kp[1] > 0
+            ]
+
+            if not valid_indices:
+                output_frames.append(annotated_frame)
+                continue
+
             # Build a (1, N, 2) array for supervision's KeyPoints
             xy = np.array(
-                [[kp[0], kp[1]] for kp in raw_keypoints], dtype=np.float32
+                [[raw_keypoints[i][0], raw_keypoints[i][1]] for i in valid_indices],
+                dtype=np.float32,
             ).reshape(1, -1, 2)
 
             key_points = sv.KeyPoints(xy=xy)
@@ -68,8 +83,8 @@ class CourtKeypointDrawer:
                 key_points=key_points,
             )
 
-            # Labels are the keypoint indices
-            labels = [str(i) for i in range(len(raw_keypoints))]
+            # Labels are the original keypoint indices
+            labels = [str(i) for i in valid_indices]
             annotated_frame = vertex_label_annotator.annotate(
                 scene=annotated_frame,
                 key_points=key_points,

@@ -102,13 +102,163 @@ class TacticalViewConverter:
     # Keypoint validation
     # ------------------------------------------------------------------
 
-    def validate_keypoints(self, keypoints_list):
-        """Filter out mis-detected keypoints by checking distance proportions.
+    def _remap_mirrored_keypoints(self, frame_keypoints):
+        """Remap left/right symmetric keypoints when spatially inconsistent.
 
-        For every detected keypoint the ratio of its distance to two
-        reference neighbours is compared against the expected ratio from
-        the tactical-view key-point layout.  If the error exceeds 80 %,
-        the keypoint is zeroed out so the homography ignores it.
+        The YOLO Pose model sometimes assigns a keypoint the index of
+        its mirror counterpart (e.g. right-side baseline point labelled
+        as a left-side index).  This method uses a centre-x reference
+        derived from midcourt or the average of detected anchors to
+        detect and correct every left ↔ right mislabelling.
+
+        Symmetric pairs (left_idx, right_idx)::
+
+            Baselines:   (0, 15)  (1, 14)  (2, 13)  (3, 12)  (4, 11)  (5, 10)
+            Elbows:      (8, 16)  (9, 17)
+
+        Within each pair the left index should have a *smaller* x in the
+        video frame than the right index.
+
+        Args:
+            frame_keypoints (list[tuple]): Mutable list of
+                ``(x, y, conf)`` for a single frame (length 18).
+
+        Returns:
+            list[tuple]: The (possibly modified) keypoints.
+        """
+        if len(frame_keypoints) < 18:
+            return frame_keypoints
+
+        # All left ↔ right symmetric pairs
+        mirror_pairs = [
+            (0, 15),   # top-left corner      ↔ top-right corner
+            (1, 14),   # left sideline mark 1  ↔ right sideline mark 1
+            (2, 13),   # left lane top         ↔ right lane top
+            (3, 12),   # left lane bottom      ↔ right lane bottom
+            (4, 11),   # left sideline mark 2  ↔ right sideline mark 2
+            (5, 10),   # bottom-left corner    ↔ bottom-right corner
+            (8, 16),   # left FT elbow top     ↔ right FT elbow top
+            (9, 17),   # left FT elbow bottom  ↔ right FT elbow bottom
+        ]
+
+        # --- Determine a reference centre-x from visible anchors ---
+        #
+        # Priority:
+        #   1. Midcourt line (keypoints 6, 7) — most reliable.
+        #   2. Baseline ↔ elbow spatial relationship:
+        #      • Left court: baseline x  <  elbow x  → centre is RIGHT
+        #        of everything visible.
+        #      • Right court: baseline x  >  elbow x  → centre is LEFT
+        #        of everything visible.
+        #   3. Give up — cannot determine side.
+        mid_xs = [
+            frame_keypoints[i][0]
+            for i in (6, 7)
+            if frame_keypoints[i][0] > 0 and frame_keypoints[i][1] > 0
+        ]
+
+        if mid_xs:
+            center_x = sum(mid_xs) / len(mid_xs)
+        else:
+            # Collect x-coords for any detected baseline and elbow points
+            # (regardless of which index the model assigned).
+            left_baseline_indices = range(0, 6)
+            right_baseline_indices = range(10, 16)
+            left_elbow_indices = (8, 9)
+            right_elbow_indices = (16, 17)
+
+            baseline_xs = [
+                frame_keypoints[i][0]
+                for i in (*left_baseline_indices, *right_baseline_indices)
+                if frame_keypoints[i][0] > 0 and frame_keypoints[i][1] > 0
+            ]
+            elbow_xs = [
+                frame_keypoints[i][0]
+                for i in (*left_elbow_indices, *right_elbow_indices)
+                if frame_keypoints[i][0] > 0 and frame_keypoints[i][1] > 0
+            ]
+
+            if baseline_xs and elbow_xs:
+                avg_baseline_x = sum(baseline_xs) / len(baseline_xs)
+                avg_elbow_x = sum(elbow_xs) / len(elbow_xs)
+
+                # Collect all detected x values to find the extent
+                all_detected_xs = [
+                    frame_keypoints[i][0]
+                    for i in range(18)
+                    if i not in (6, 7)
+                    and frame_keypoints[i][0] > 0
+                    and frame_keypoints[i][1] > 0
+                ]
+
+                if avg_baseline_x < avg_elbow_x:
+                    # Left court visible: baselines left of elbows.
+                    # Place centre to the right of everything visible so
+                    # all visible points are treated as "left-side".
+                    center_x = max(all_detected_xs) + 100
+                elif avg_baseline_x > avg_elbow_x:
+                    # Right court visible: baselines right of elbows.
+                    # Place centre to the left of everything visible so
+                    # all visible points are treated as "right-side".
+                    center_x = min(all_detected_xs) - 100
+                else:
+                    return frame_keypoints
+            else:
+                # Cannot determine court side — skip remapping
+                return frame_keypoints
+
+        # --- Check each symmetric pair ---
+        for left_idx, right_idx in mirror_pairs:
+            left_valid = (
+                frame_keypoints[left_idx][0] > 0
+                and frame_keypoints[left_idx][1] > 0
+            )
+            right_valid = (
+                frame_keypoints[right_idx][0] > 0
+                and frame_keypoints[right_idx][1] > 0
+            )
+
+            if left_valid and not right_valid:
+                # Only "left" detected — but is it actually on the right?
+                if frame_keypoints[left_idx][0] > center_x:
+                    frame_keypoints[right_idx] = frame_keypoints[left_idx]
+                    frame_keypoints[left_idx] = (0.0, 0.0, 0.0)
+
+            elif right_valid and not left_valid:
+                # Only "right" detected — but is it actually on the left?
+                if frame_keypoints[right_idx][0] < center_x:
+                    frame_keypoints[left_idx] = frame_keypoints[right_idx]
+                    frame_keypoints[right_idx] = (0.0, 0.0, 0.0)
+
+            elif left_valid and right_valid:
+                # Both detected — swap if left has larger x than right
+                if frame_keypoints[left_idx][0] > frame_keypoints[right_idx][0]:
+                    frame_keypoints[left_idx], frame_keypoints[right_idx] = (
+                        frame_keypoints[right_idx],
+                        frame_keypoints[left_idx],
+                    )
+
+        return frame_keypoints
+
+    def validate_keypoints(self, keypoints_list):
+        """Filter out mis-detected keypoints using multiple heuristics.
+
+        Validation steps applied **per frame**:
+        0. **Mirror remap** – for every left/right symmetric keypoint
+           pair, if the "left" index sits right of centre (or vice
+           versa), the indices are swapped so the homography uses
+           the correct correspondences.
+        1. **Proportion check** – for every detected keypoint the ratio
+           of its distance to two reference neighbours is compared
+           against the expected ratio from the tactical-view key-point
+           layout.  If the error exceeds 60 % the keypoint is zeroed.
+        2. **Pairwise ordering check** – left-edge keypoints should
+           have smaller x than right-edge keypoints in the image.
+           Violations indicate a mis-detection (e.g. index 16 landing on
+           top of index 8).
+        3. **Frame-to-frame jump filter** – if a keypoint teleports
+           more than ``max_jump_px`` pixels between consecutive frames
+           it is zeroed, since real camera motion is continuous.
 
         Args:
             keypoints_list (list[list[tuple]]): Per-frame keypoints as
@@ -116,12 +266,34 @@ class TacticalViewConverter:
                 ``y == 0`` is considered undetected.
 
         Returns:
-            list[list[tuple]]: Cleaned keypoints (same structure, invalid
+            list[list[tuple]]: Cleaned keypoints (same structure; invalid
             entries replaced with ``(0, 0, 0)``).
         """
         keypoints_list = deepcopy(keypoints_list)
 
+        # Pairs of keypoint indices that should maintain a spatial
+        # ordering in the video frame (left < right in x).
+        # Left-side elbows (8, 9) should have smaller x than right-side
+        # elbows (16, 17).  Left baseline (0-5) < right baseline (10-15).
+        ordered_pairs_x = [
+            (8, 16),   # left FT elbow top  <  right FT elbow top
+            (9, 17),   # left FT elbow bot  <  right FT elbow bot
+            (0, 15),   # top-left corner    <  top-right corner
+            (5, 10),   # bottom-left corner <  bottom-right corner
+        ]
+
+        max_jump_px = 120  # pixels – max plausible frame-to-frame shift
+
         for frame_idx, frame_keypoints in enumerate(keypoints_list):
+            if not frame_keypoints:
+                continue
+
+            # --- Step 0: remap mis-indexed symmetric keypoints ---
+            keypoints_list[frame_idx] = self._remap_mirrored_keypoints(
+                keypoints_list[frame_idx]
+            )
+            frame_keypoints = keypoints_list[frame_idx]
+
             # Indices where the model actually detected something
             detected_indices = [
                 i
@@ -130,14 +302,15 @@ class TacticalViewConverter:
             ]
 
             if len(detected_indices) < 3:
+                # Too few points – zero them all to avoid a bad homography
+                for i in detected_indices:
+                    keypoints_list[frame_idx][i] = (0.0, 0.0, 0.0)
                 continue
 
-            invalid_keypoints = []
+            invalid_keypoints = set()
 
+            # --- Step 1: proportion check ---
             for i in detected_indices:
-                if frame_keypoints[i][0] == 0 and frame_keypoints[i][1] == 0:
-                    continue
-
                 other_indices = [
                     idx
                     for idx in detected_indices
@@ -166,10 +339,38 @@ class TacticalViewConverter:
                         (prop_detected - prop_tactical) / prop_tactical
                     )
 
-                    if error > 0.8:
-                        # Zero-out the unreliable keypoint
+                    if error > 0.6:
                         keypoints_list[frame_idx][i] = (0.0, 0.0, 0.0)
-                        invalid_keypoints.append(i)
+                        invalid_keypoints.add(i)
+
+            # --- Step 2: pairwise ordering check ---
+            for left_idx, right_idx in ordered_pairs_x:
+                if left_idx >= len(frame_keypoints) or right_idx >= len(frame_keypoints):
+                    continue
+                lkp = keypoints_list[frame_idx][left_idx]
+                rkp = keypoints_list[frame_idx][right_idx]
+                if lkp[0] > 0 and rkp[0] > 0 and lkp[0] >= rkp[0]:
+                    # Left keypoint is NOT left of right → one is wrong;
+                    # zero both to be safe.
+                    keypoints_list[frame_idx][left_idx] = (0.0, 0.0, 0.0)
+                    keypoints_list[frame_idx][right_idx] = (0.0, 0.0, 0.0)
+                    invalid_keypoints.update({left_idx, right_idx})
+
+            # --- Step 3: frame-to-frame jump filter ---
+            if frame_idx > 0:
+                prev_keypoints = keypoints_list[frame_idx - 1]
+                for i in range(len(frame_keypoints)):
+                    if i in invalid_keypoints:
+                        continue
+                    cur = keypoints_list[frame_idx][i]
+                    if i >= len(prev_keypoints):
+                        continue
+                    prev = prev_keypoints[i]
+                    if cur[0] > 0 and cur[1] > 0 and prev[0] > 0 and prev[1] > 0:
+                        jump = measure_distance(cur[:2], prev[:2])
+                        if jump > max_jump_px:
+                            keypoints_list[frame_idx][i] = (0.0, 0.0, 0.0)
+                            invalid_keypoints.add(i)
 
         return keypoints_list
 
