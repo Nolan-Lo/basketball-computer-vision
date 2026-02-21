@@ -34,7 +34,7 @@ class TacticalViewConverter:
     def __init__(self, court_image_path: str) -> None:
         self.court_image_path = court_image_path
         self.width = 300
-        self.height = 161
+        self.height = int(self.width * 15.24 / 28.65)  # 160 — preserves NBA aspect ratio
 
         # Real-world court dimensions (NBA)
         self.actual_width_in_meters = 28.65   # 94 ft
@@ -381,6 +381,13 @@ class TacticalViewConverter:
     def transform_players_to_tactical_view(self, keypoints_list, player_tracks):
         """Project player foot-positions to the tactical-view court.
 
+        When the current frame has ≥ 4 valid keypoints a fresh homography
+        is computed.  Otherwise the **last successful homography** is
+        reused for up to ``max_reuse_frames`` frames.  This keeps the
+        tactical map populated through brief keypoint dropouts without
+        carrying forward stale pixel positions (which break when the
+        camera pans).
+
         Args:
             keypoints_list (list[list[tuple]]): Per-frame court keypoints
                 as ``[(x, y, conf), ...]``.
@@ -392,52 +399,63 @@ class TacticalViewConverter:
             ``track_id → [x, y]`` in tactical-view pixels.
         """
         tactical_player_positions = []
+        last_homography = None
+        frames_since_good = 0
+        max_reuse_frames = 10  # reuse for up to ~0.3 s at 30 fps
 
         for frame_keypoints, frame_tracks in zip(keypoints_list, player_tracks):
             tactical_positions = {}
+            homography = None
 
-            if not frame_keypoints:
-                tactical_player_positions.append(tactical_positions)
-                continue
+            if frame_keypoints:
+                # Keep only detected keypoints (x > 0 and y > 0)
+                valid_indices = [
+                    i
+                    for i, kp in enumerate(frame_keypoints)
+                    if kp[0] > 0 and kp[1] > 0
+                ]
 
-            # Keep only detected keypoints (x > 0 and y > 0)
-            valid_indices = [
-                i
-                for i, kp in enumerate(frame_keypoints)
-                if kp[0] > 0 and kp[1] > 0
-            ]
+                # Need >= 4 points for a reliable homography
+                if len(valid_indices) >= 4:
+                    source_points = np.array(
+                        [frame_keypoints[i][:2] for i in valid_indices],
+                        dtype=np.float32,
+                    )
+                    target_points = np.array(
+                        [self.key_points[i] for i in valid_indices],
+                        dtype=np.float32,
+                    )
 
-            # Need >= 4 points for a reliable homography
-            if len(valid_indices) < 4:
-                tactical_player_positions.append(tactical_positions)
-                continue
+                    try:
+                        homography = Homography(source_points, target_points)
+                        last_homography = homography
+                        frames_since_good = 0
+                    except (ValueError, cv2.error):
+                        homography = None
 
-            source_points = np.array(
-                [frame_keypoints[i][:2] for i in valid_indices], dtype=np.float32
-            )
-            target_points = np.array(
-                [self.key_points[i] for i in valid_indices], dtype=np.float32
-            )
+            # Fall back to last good homography if current frame failed
+            if homography is None and last_homography is not None:
+                frames_since_good += 1
+                if frames_since_good <= max_reuse_frames:
+                    homography = last_homography
 
-            try:
-                homography = Homography(source_points, target_points)
-
+            # Project players through whichever homography we have
+            if homography is not None:
                 for player_id, player_data in frame_tracks.items():
                     bbox = player_data["bbox"]
                     player_position = np.array([get_foot_position(bbox)])
-                    tactical_position = homography.transform_points(
-                        player_position
-                    )
-
-                    tx, ty = tactical_position[0]
-                    # Discard positions projected outside the court bounds
-                    if 0 <= tx <= self.width and 0 <= ty <= self.height:
-                        tactical_positions[player_id] = tactical_position[
-                            0
-                        ].tolist()
-
-            except (ValueError, cv2.error):
-                pass  # homography failed — empty dict for this frame
+                    try:
+                        tactical_position = homography.transform_points(
+                            player_position
+                        )
+                        tx, ty = tactical_position[0]
+                        # Discard positions projected outside the court
+                        if 0 <= tx <= self.width and 0 <= ty <= self.height:
+                            tactical_positions[player_id] = (
+                                tactical_position[0].tolist()
+                            )
+                    except (ValueError, cv2.error):
+                        pass
 
             tactical_player_positions.append(tactical_positions)
 

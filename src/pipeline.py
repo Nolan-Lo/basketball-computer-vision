@@ -168,7 +168,7 @@ class BasketballAnalysisPipeline:
         
         return ball_tracks
     
-    def detect_court_keypoints(self, frames, confidence_threshold=0.5, verbose=True):
+    def detect_court_keypoints(self, frames, confidence_threshold=0.4, verbose=True):
         """
         Detect court keypoints in all frames.
         
@@ -207,18 +207,22 @@ class BasketballAnalysisPipeline:
                 keypoints_data = results[0].keypoints.xy.cpu().numpy()
                 
                 if len(keypoints_data) > 0:
-                    # Get the first detection's keypoints
-                    kpts = keypoints_data[0]  # Shape: (num_keypoints, 2)
-                    
+                    # Pick the detection with the highest mean keypoint
+                    # confidence (the model may return multiple detections).
                     if hasattr(results[0].keypoints, 'conf'):
-                        conf = results[0].keypoints.conf.cpu().numpy()[0]
+                        all_conf = results[0].keypoints.conf.cpu().numpy()
+                        # Mean confidence across all keypoints per detection
+                        mean_confs = [c.mean() for c in all_conf]
+                        best_idx = int(np.argmax(mean_confs))
+                        kpts = keypoints_data[best_idx]
+                        conf = all_conf[best_idx]
                         for i, (x, y) in enumerate(kpts):
-                            # Zero-out low-confidence or off-screen keypoints
                             if conf[i] >= confidence_threshold and x > 0 and y > 0:
                                 frame_keypoints.append((float(x), float(y), float(conf[i])))
                             else:
                                 frame_keypoints.append((0.0, 0.0, 0.0))
                     else:
+                        kpts = keypoints_data[0]
                         for x, y in kpts:
                             if x > 0 and y > 0:
                                 frame_keypoints.append((float(x), float(y), 1.0))
