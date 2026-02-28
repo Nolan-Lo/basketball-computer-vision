@@ -22,6 +22,26 @@ from copy import deepcopy
 from .homography import Homography
 from .bbox_utils import get_foot_position, measure_distance
 
+# ---------------------------------------------------------------------------
+# Court keypoint constants
+# ---------------------------------------------------------------------------
+
+# Mirror map: each keypoint index → its symmetric left↔right counterpart.
+MIRROR_MAP = {
+    0: 15, 1: 14, 2: 13, 3: 12, 4: 11, 5: 10,
+    10: 5, 11: 4, 12: 3, 13: 2, 14: 1, 15: 0,
+    8: 16, 9: 17, 16: 8, 17: 9,
+}
+
+# Structural groupings (independent of left/right labelling).
+BASELINE_INDICES = {0, 1, 2, 3, 4, 5, 10, 11, 12, 13, 14, 15}
+ELBOW_INDICES = {8, 9, 16, 17}
+MIDCOURT_INDICES = {6, 7}
+
+# Valid keypoint indices for each court half.
+LEFT_VALID = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+RIGHT_VALID = {6, 7, 10, 11, 12, 13, 14, 15, 16, 17}
+
 
 class TacticalViewConverter:
     """Convert video-frame player positions to a fixed-size 2D court.
@@ -99,164 +119,129 @@ class TacticalViewConverter:
         ]
 
     # ------------------------------------------------------------------
-    # Keypoint validation
+    # Court-side detection & keypoint enforcement
     # ------------------------------------------------------------------
 
-    def _remap_mirrored_keypoints(self, frame_keypoints):
-        """Remap left/right symmetric keypoints when spatially inconsistent.
+    def _determine_court_side(self, keypoints_list, sample_frames=None):
+        """Determine which half of the court is visible.
 
-        The YOLO Pose model sometimes assigns a keypoint the index of
-        its mirror counterpart (e.g. right-side baseline point labelled
-        as a left-side index).  This method uses a centre-x reference
-        derived from midcourt or the average of detected anchors to
-        detect and correct every left ↔ right mislabelling.
+        Compares the average video-frame x-position of *baseline*-type
+        keypoints (indices 0-5 / 10-15) against *elbow*-type keypoints
+        (indices 8-9 / 16-17) aggregated across several frames.
 
-        Symmetric pairs (left_idx, right_idx)::
+        On a **left** half-court view the baseline is at the left edge
+        of the frame and the free-throw elbows are further right
+        (toward midcourt).  The converse holds for a **right** view.
 
-            Baselines:   (0, 15)  (1, 14)  (2, 13)  (3, 12)  (4, 11)  (5, 10)
-            Elbows:      (8, 16)  (9, 17)
-
-        Within each pair the left index should have a *smaller* x in the
-        video frame than the right index.
+        The method groups keypoints by structural type regardless of
+        which specific index the model assigned, so it is robust to
+        left ↔ right mis-labelling by the detector.
 
         Args:
-            frame_keypoints (list[tuple]): Mutable list of
-                ``(x, y, conf)`` for a single frame (length 18).
+            keypoints_list (list[list[tuple]]): Per-frame keypoints
+                ``[(x, y, conf), ...]``.
+            sample_frames (int | None): Number of frames to inspect.
+                *None* uses every frame.
+
+        Returns:
+            str: ``"left"``, ``"right"``, or ``"unknown"``.
+        """
+        if sample_frames is None:
+            sample_frames = len(keypoints_list)
+
+        baseline_xs: list[float] = []
+        elbow_xs: list[float] = []
+
+        for frame_kps in keypoints_list[:sample_frames]:
+            if not frame_kps:
+                continue
+            for i, kp in enumerate(frame_kps):
+                if kp[0] <= 0 or kp[1] <= 0:
+                    continue
+                if i in BASELINE_INDICES:
+                    baseline_xs.append(kp[0])
+                elif i in ELBOW_INDICES:
+                    elbow_xs.append(kp[0])
+
+        if not baseline_xs or not elbow_xs:
+            return "unknown"
+
+        avg_baseline_x = sum(baseline_xs) / len(baseline_xs)
+        avg_elbow_x = sum(elbow_xs) / len(elbow_xs)
+
+        # Require a meaningful pixel separation to be confident.
+        if abs(avg_baseline_x - avg_elbow_x) < 50:
+            return "unknown"
+
+        return "left" if avg_baseline_x < avg_elbow_x else "right"
+
+    def _enforce_court_side(self, frame_keypoints, court_side):
+        """Remap or zero keypoints that belong to the wrong court half.
+
+        Given the determined *court_side*:
+
+        * **left** → only indices in ``LEFT_VALID`` are allowed.
+        * **right** → only indices in ``RIGHT_VALID`` are allowed.
+
+        A detected keypoint whose index falls outside the valid set is
+        *remapped* to its mirror index when the mirror slot is empty,
+        or discarded (zeroed) when the mirror slot is already occupied
+        (the duplicate / conflicting case such as 8 **and** 16 both
+        being predicted at the same physical location).
+
+        Args:
+            frame_keypoints (list[tuple]): Mutable per-frame keypoints.
+            court_side (str): ``"left"``, ``"right"``, or ``"unknown"``.
 
         Returns:
             list[tuple]: The (possibly modified) keypoints.
         """
-        if len(frame_keypoints) < 18:
+        if court_side == "unknown" or len(frame_keypoints) < 18:
             return frame_keypoints
 
-        # All left ↔ right symmetric pairs
-        mirror_pairs = [
-            (0, 15),   # top-left corner      ↔ top-right corner
-            (1, 14),   # left sideline mark 1  ↔ right sideline mark 1
-            (2, 13),   # left lane top         ↔ right lane top
-            (3, 12),   # left lane bottom      ↔ right lane bottom
-            (4, 11),   # left sideline mark 2  ↔ right sideline mark 2
-            (5, 10),   # bottom-left corner    ↔ bottom-right corner
-            (8, 16),   # left FT elbow top     ↔ right FT elbow top
-            (9, 17),   # left FT elbow bottom  ↔ right FT elbow bottom
-        ]
+        valid_set = LEFT_VALID if court_side == "left" else RIGHT_VALID
 
-        # --- Determine a reference centre-x from visible anchors ---
-        #
-        # Priority:
-        #   1. Midcourt line (keypoints 6, 7) — most reliable.
-        #   2. Baseline ↔ elbow spatial relationship:
-        #      • Left court: baseline x  <  elbow x  → centre is RIGHT
-        #        of everything visible.
-        #      • Right court: baseline x  >  elbow x  → centre is LEFT
-        #        of everything visible.
-        #   3. Give up — cannot determine side.
-        mid_xs = [
-            frame_keypoints[i][0]
-            for i in (6, 7)
-            if frame_keypoints[i][0] > 0 and frame_keypoints[i][1] > 0
-        ]
+        for i in range(18):
+            if frame_keypoints[i][0] <= 0 or frame_keypoints[i][1] <= 0:
+                continue
 
-        if mid_xs:
-            center_x = sum(mid_xs) / len(mid_xs)
-        else:
-            # Collect x-coords for any detected baseline and elbow points
-            # (regardless of which index the model assigned).
-            left_baseline_indices = range(0, 6)
-            right_baseline_indices = range(10, 16)
-            left_elbow_indices = (8, 9)
-            right_elbow_indices = (16, 17)
+            if i in valid_set:
+                continue  # correctly indexed for this court side
 
-            baseline_xs = [
-                frame_keypoints[i][0]
-                for i in (*left_baseline_indices, *right_baseline_indices)
-                if frame_keypoints[i][0] > 0 and frame_keypoints[i][1] > 0
-            ]
-            elbow_xs = [
-                frame_keypoints[i][0]
-                for i in (*left_elbow_indices, *right_elbow_indices)
-                if frame_keypoints[i][0] > 0 and frame_keypoints[i][1] > 0
-            ]
+            # Wrong-side keypoint — try to remap to its mirror
+            mirror = MIRROR_MAP.get(i)
+            if mirror is not None and mirror in valid_set:
+                mirror_empty = (
+                    frame_keypoints[mirror][0] <= 0
+                    or frame_keypoints[mirror][1] <= 0
+                )
+                if mirror_empty:
+                    frame_keypoints[mirror] = frame_keypoints[i]
+                # else: mirror slot already occupied → discard duplicate
 
-            if baseline_xs and elbow_xs:
-                avg_baseline_x = sum(baseline_xs) / len(baseline_xs)
-                avg_elbow_x = sum(elbow_xs) / len(elbow_xs)
-
-                # Collect all detected x values to find the extent
-                all_detected_xs = [
-                    frame_keypoints[i][0]
-                    for i in range(18)
-                    if i not in (6, 7)
-                    and frame_keypoints[i][0] > 0
-                    and frame_keypoints[i][1] > 0
-                ]
-
-                if avg_baseline_x < avg_elbow_x:
-                    # Left court visible: baselines left of elbows.
-                    # Place centre to the right of everything visible so
-                    # all visible points are treated as "left-side".
-                    center_x = max(all_detected_xs) + 100
-                elif avg_baseline_x > avg_elbow_x:
-                    # Right court visible: baselines right of elbows.
-                    # Place centre to the left of everything visible so
-                    # all visible points are treated as "right-side".
-                    center_x = min(all_detected_xs) - 100
-                else:
-                    return frame_keypoints
-            else:
-                # Cannot determine court side — skip remapping
-                return frame_keypoints
-
-        # --- Check each symmetric pair ---
-        for left_idx, right_idx in mirror_pairs:
-            left_valid = (
-                frame_keypoints[left_idx][0] > 0
-                and frame_keypoints[left_idx][1] > 0
-            )
-            right_valid = (
-                frame_keypoints[right_idx][0] > 0
-                and frame_keypoints[right_idx][1] > 0
-            )
-
-            if left_valid and not right_valid:
-                # Only "left" detected — but is it actually on the right?
-                if frame_keypoints[left_idx][0] > center_x:
-                    frame_keypoints[right_idx] = frame_keypoints[left_idx]
-                    frame_keypoints[left_idx] = (0.0, 0.0, 0.0)
-
-            elif right_valid and not left_valid:
-                # Only "right" detected — but is it actually on the left?
-                if frame_keypoints[right_idx][0] < center_x:
-                    frame_keypoints[left_idx] = frame_keypoints[right_idx]
-                    frame_keypoints[right_idx] = (0.0, 0.0, 0.0)
-
-            elif left_valid and right_valid:
-                # Both detected — swap if left has larger x than right
-                if frame_keypoints[left_idx][0] > frame_keypoints[right_idx][0]:
-                    frame_keypoints[left_idx], frame_keypoints[right_idx] = (
-                        frame_keypoints[right_idx],
-                        frame_keypoints[left_idx],
-                    )
+            # Zero the wrong-side index in all cases
+            frame_keypoints[i] = (0.0, 0.0, 0.0)
 
         return frame_keypoints
 
     def validate_keypoints(self, keypoints_list):
-        """Filter out mis-detected keypoints using multiple heuristics.
+        """Filter out mis-detected keypoints using court-side enforcement
+        and geometric heuristics.
 
-        Validation steps applied **per frame**:
-        0. **Mirror remap** – for every left/right symmetric keypoint
-           pair, if the "left" index sits right of centre (or vice
-           versa), the indices are swapped so the homography uses
-           the correct correspondences.
-        1. **Proportion check** – for every detected keypoint the ratio
+        Validation steps:
+
+        0. **Court-side determination** (once) – analyse all frames to
+           decide whether the camera shows the left or right half-court.
+        1. **Court-side enforcement** – per frame, remap any keypoint
+           whose index belongs to the opposite half to its mirror, or
+           zero it when the mirror slot is already filled.
+        2. **Proportion check** – for every detected keypoint the ratio
            of its distance to two reference neighbours is compared
            against the expected ratio from the tactical-view key-point
            layout.  If the error exceeds 60 % the keypoint is zeroed.
-        2. **Pairwise ordering check** – left-edge keypoints should
+        3. **Pairwise ordering check** – left-edge keypoints should
            have smaller x than right-edge keypoints in the image.
-           Violations indicate a mis-detection (e.g. index 16 landing on
-           top of index 8).
-        3. **Frame-to-frame jump filter** – if a keypoint teleports
+        4. **Frame-to-frame jump filter** – if a keypoint teleports
            more than ``max_jump_px`` pixels between consecutive frames
            it is zeroed, since real camera motion is continuous.
 
@@ -271,10 +256,12 @@ class TacticalViewConverter:
         """
         keypoints_list = deepcopy(keypoints_list)
 
+        # --- Step 0: determine court side (once for whole video) ---
+        court_side = self._determine_court_side(keypoints_list)
+        print(f"  Court side detected: {court_side}")
+
         # Pairs of keypoint indices that should maintain a spatial
         # ordering in the video frame (left < right in x).
-        # Left-side elbows (8, 9) should have smaller x than right-side
-        # elbows (16, 17).  Left baseline (0-5) < right baseline (10-15).
         ordered_pairs_x = [
             (8, 16),   # left FT elbow top  <  right FT elbow top
             (9, 17),   # left FT elbow bot  <  right FT elbow bot
@@ -288,9 +275,9 @@ class TacticalViewConverter:
             if not frame_keypoints:
                 continue
 
-            # --- Step 0: remap mis-indexed symmetric keypoints ---
-            keypoints_list[frame_idx] = self._remap_mirrored_keypoints(
-                keypoints_list[frame_idx]
+            # --- Step 1: enforce court side ---
+            keypoints_list[frame_idx] = self._enforce_court_side(
+                keypoints_list[frame_idx], court_side
             )
             frame_keypoints = keypoints_list[frame_idx]
 
@@ -309,7 +296,7 @@ class TacticalViewConverter:
 
             invalid_keypoints = set()
 
-            # --- Step 1: proportion check ---
+            # --- Step 2: proportion check ---
             for i in detected_indices:
                 other_indices = [
                     idx
@@ -343,7 +330,7 @@ class TacticalViewConverter:
                         keypoints_list[frame_idx][i] = (0.0, 0.0, 0.0)
                         invalid_keypoints.add(i)
 
-            # --- Step 2: pairwise ordering check ---
+            # --- Step 3: pairwise ordering check ---
             for left_idx, right_idx in ordered_pairs_x:
                 if left_idx >= len(frame_keypoints) or right_idx >= len(frame_keypoints):
                     continue
@@ -356,7 +343,7 @@ class TacticalViewConverter:
                     keypoints_list[frame_idx][right_idx] = (0.0, 0.0, 0.0)
                     invalid_keypoints.update({left_idx, right_idx})
 
-            # --- Step 3: frame-to-frame jump filter ---
+            # --- Step 4: frame-to-frame jump filter ---
             if frame_idx > 0:
                 prev_keypoints = keypoints_list[frame_idx - 1]
                 for i in range(len(frame_keypoints)):
