@@ -19,8 +19,8 @@ def main():
     print("="*70 + "\n")
     
     # Default configuration
-    input_video = "input_videos/video_2.mp4"
-    output_video = "runs/pipeline_output/video2_v11_40pct.mp4"
+    input_video = "input_videos/video_5.mp4"
+    output_video = "runs/pipeline_output/video5_v11_40pct.mp4"
     player_model = "models/Basketball-Players-17.pt"
     court_model = "models/court-keypoints.pt"
     court_image = "images/basketball_court.png"
@@ -60,10 +60,10 @@ def main():
         pipeline = BasketballAnalysisPipeline(
             player_model_path=player_model,
             court_model_path=court_model,
-            team_1_description="White basketball jersey and white basketball shorts",
-            team_2_description="Dark basketball jersey and dark basketball shorts",
-            # team_1_description="Yellow basketball jersey and yellow basketball shorts",
-            # team_2_description="Black basketball jersey with red trim and black basketball shorts with red trim",
+            team_1_description="white jersey",
+            team_2_description="dark jersey",
+            # team_1_description="yellow jersey",
+            # team_2_description="black jersey",
             court_image_path=court_image
         )
         

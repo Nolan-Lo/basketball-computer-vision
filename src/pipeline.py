@@ -108,6 +108,9 @@ class BasketballAnalysisPipeline:
         """
         Detect and track players across all frames using ByteTrack.
         
+        Includes linear interpolation of short gaps where a player was
+        temporarily lost (e.g. due to occlusion or a missed detection).
+
         Args:
             frames (list): List of video frames.
             cache_path (str): Optional path to cache file.
@@ -124,11 +127,17 @@ class BasketballAnalysisPipeline:
             read_from_stub=(cache_path is not None),
             stub_path=str(cache_path) if cache_path else None
         )
+
+        raw_detections = sum(len(f) for f in player_tracks)
+
+        # Fill short gaps with interpolated bounding boxes
+        player_tracks = self.player_tracker.interpolate_player_tracks(player_tracks)
         
         if verbose:
             total_detections = sum(len(f) for f in player_tracks)
             print(f"✓ Tracked players across {len(frames)} frames "
-                  f"({total_detections} total detections)\n")
+                  f"({raw_detections} raw detections, "
+                  f"{total_detections} after interpolation)\n")
         
         return player_tracks
     
