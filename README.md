@@ -1,262 +1,304 @@
 # Basketball Video Analytics
 
-Automated basketball video analysis system that captures spatial and off-ball dynamics using computer vision.
+Automated basketball video analysis using computer vision. Processes standard broadcast basketball footage to detect and track players, the basketball, team affiliations, court keypoints, and ball possession — then projects all entities onto a 2D tactical court view.
+
+**Group 14** — Nolan Lo, Matthew Zidell, Mehul Kalsi
+DSC 288 Capstone, UC San Diego
+
+---
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Prerequisites](#prerequisites)
+3. [Setup & Installation](#setup--installation)
+4. [Download Models & Input Video](#download-models--input-video)
+5. [Running the Pipeline](#running-the-pipeline)
+6. [Configuring main.py](#configuring-mainpy)
+7. [Using the CLI Directly](#using-the-cli-directly)
+8. [Caching & Reprocessing](#caching--reprocessing)
+9. [Output](#output)
+10. [Project Structure](#project-structure)
+11. [Troubleshooting](#troubleshooting)
+
+---
 
 ## Overview
 
-This system processes broadcast basketball videos to identify and track key game entities in real-time:
-- **Players** - Detect and track all players on court
-- **Ball** - Locate the basketball
-- **Teams** - Classify players into teams based on jersey appearance
-- **Court** - Detect court keypoints for spatial mapping
+The pipeline runs six stages on each video:
 
-## Quick Start
+1. **Player & Ball Detection** — Fine-tuned YOLOv5l6u detects players, referees, ball, and overlays.
+2. **Multi-Object Tracking** — ByteTrack assigns persistent track IDs across frames.
+3. **Court Keypoint Detection** — Fine-tuned YOLOv8x-Pose localizes 18 court reference points.
+4. **Team Assignment** — CLIP (fashion-clip) classifies each player's jersey via text-image similarity.
+5. **Ball Possession Detection** — Algorithmic proximity analysis determines which player has the ball.
+6. **Visualization & Tactical View** — Draws annotated bounding boxes, court keypoints, and a 2D minimap via homography projection.
 
-### Run the Complete Pipeline
+---
+
+## Prerequisites
+
+- **Python 3.12+**
+- **[uv](https://docs.astral.sh/uv/)** — fast Python package manager (used instead of pip/venv)
+- **Git**
+- A CUDA-compatible GPU is recommended but not required (CPU works, just slower)
+
+### Install uv
+
+If you don't have `uv` installed:
 
 ```bash
-# Process a video with all detections
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Or with pip
+pip install uv
+```
+
+---
+
+## Setup & Installation
+
+1. **Clone the repository:**
+
+   ```bash
+   git clone https://github.com/Nolan-Lo/basketball-computer-vision.git
+   cd basketball-computer-vision
+   ```
+
+2. **Install all dependencies:**
+
+   ```bash
+   uv sync
+   ```
+
+   This creates a `.venv/` virtual environment and installs everything from `pyproject.toml` (PyTorch, Ultralytics, OpenCV, Transformers, Supervision, etc.). No manual `pip install` needed.
+
+---
+
+## Download Models & Input Video
+
+The trained model weights and a sample input video are hosted on Google Drive since they are too large for the repository.
+
+**Google Drive link:** https://drive.google.com/drive/folders/PLACEHOLDER_LINK
+
+
+Download the following files and place them in the correct locations:
+
+| File | Place in | Description |
+|------|----------|-------------|
+| `Basketball-Players-17.pt` | `models/Basketball-Players-17.pt` | Fine-tuned YOLOv5l6u for player/ball detection |
+| `court-keypoints.pt` | `models/court-keypoints.pt` | Fine-tuned YOLOv8x-Pose for court keypoint detection |
+| `video_1.mp4` (or other input videos) | `input_videos/video_1.mp4` | Sample broadcast basketball video |
+
+After downloading, your directory should look like:
+
+```
+basketball-video-analytics/
+├── models/
+│   ├── Basketball-Players-17.pt   ← downloaded
+│   └── court-keypoints.pt         ← downloaded
+├── input_videos/
+│   └── video_1.mp4                ← downloaded
+├── images/
+│   └── basketball_court.png       (already in repo)
+└── ...
+```
+
+---
+
+## Running the Pipeline
+
+The simplest way to run the full pipeline:
+
+```bash
+uv run python main.py
+```
+
+This uses the default settings defined in `main.py`. The output video will be written to the path specified in that file (by default, `runs/pipeline_output/`).
+
+---
+
+## Configuring main.py
+
+Open `main.py` and edit the variables near the top of the `main()` function to control the pipeline:
+
+```python
+# --- Change these to match your setup ---
+input_video = "input_videos/video_1.mp4"          # Path to your input video
+output_video = "runs/pipeline_output/output.mp4"   # Where to save the annotated video
+```
+
+To change **team jersey descriptions** (controls how CLIP classifies players), find the `BasketballAnalysisPipeline(...)` call and edit:
+
+```python
+pipeline = BasketballAnalysisPipeline(
+    player_model_path=player_model,
+    court_model_path=court_model,
+    team_1_description="white jersey",    # ← describe Team 1's jersey
+    team_2_description="dark jersey",     # ← describe Team 2's jersey
+    court_image_path=court_image
+)
+```
+
+---
+
+## Using the CLI Directly
+
+We suggest using main.py for guaranteed reproducability, but if desired, for more control, run the pipeline module directly with command-line
+
+```bash
 uv run python -m src.pipeline \
-    --input input_videos/video_1.mp4 \
-    --output runs/output.mp4 \
+    --input inp
+    --output runs/pipeline_output/output.mp4 \
     --team1 "white jersey" \
     --team2 "dark jersey"
 ```
 
-### Or use the simplified main script
+### All CLI Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--input`, `-i` | *(required)* | Path to input video file |
+| `--output`, `-o` | *(required)* | Path for output video file |
+| `--player-model` | `models/Basketball-Players-17.pt` | Path to player/ball detection model |
+| `--court-model` | `models/court-keypoints.pt` | Path to court keypoint model |
+| `--team1` | `"white jersey"` | Text description of Team 1's jersey |
+| `--team2` | `"dark jersey"` | Text description of Team 2's jersey |
+| `--cache-dir` | `runs/cache/` | Directory for caching intermediate results |
+| `--court-image` | `images/basketball_court.png` | Court background image for tactical minimap |
+| `--no-info` | *(off)* | Hide the info panel overlay on the output video |
+
+---
+
+## Caching & Reprocess
+
+The pipeline caches intermediate results (player tracks, ball tracks, team assignments) as `.pkl` files in `runs/cache/`. 
+
+Cache files are named by video f
+
+runs/cache/
+├── video_1
+├── video_1_ball_tracks.pkl
+└── video_1_teams.pkl
+
+### When to clear the cache
+
+Delete the cache files if you want to **fully reprocess** a video from scratch — for example, af
 
 ```bash
-uv run python main.py
+# Delete all cache files for a specific video
+rm runs/cache/video_1_*.pkl
+
+# Or delete the entire cache directory
+rm -rf runs/cache/
 ```
 
-## Pipeline Architecture
+The pipeline will regenerate the cache on the next run.
 
-```
-Input Video →  Player/Ball Detection  →  Court Keypoints  →  Team Assignment  →  Annotated Output
-              (YOLOv8)                  (YOLOv8-Pose)       (CLIP)               (Single Video)
-```
+**Note:** If you only changed the team descriptions (e.g., `--team1` / `--team2`), you only need to delete the `*_teams.pkl` file for that video. Player and ball track caches can be kept.
 
-### Pipeline Stages
+---
 
-1. **Player & Ball Detection** - Detect all players, ball, and ball carrier using trained YOLO model
-2. **Court Keypoint Detection** - Identify court boundary points and key locations using YOLO Pose  
-3. **Team Assignment** - Classify players into teams using CLIP vision-language model
-4. **Visualization** - Draw all detections on video with color-coding and info panel
+## Output
 
-## Features
+The pipeline produces an annotated video with:
 
-✅ **All-in-One Pipeline**: Single script processes video through all stages  
-✅ **Smart Caching**: Team assignments cached for faster reprocessing  
-✅ **GPU Acceleration**: Automatic GPU usage if CUDA available  
-✅ **Customizable**: Adjust team descriptions, colors, and visualization  
-✅ **Info Panel**: Real-time stats overlay on output video
+- ⬜ **White bounding boxes** — Team 1 players
+- 🟧 **Orange bounding boxes** — Team 2 players
+- 🟨 **Yellow bounding box** — Basketball
+- 🟪 **Magenta bounding box + "[BALL]" label** — Current ball carrier
+- 🟡 **Yellow circles** — Detected court keypoints
+- 🗺️ **Tactical minimap** — 2D court projection of player positions (bottom-left)
+- 📊 **Info panel** — Frame number, possession status, and stats (top-right)
 
-## Installation
+Output videos are saved to the path specified by `--output` or the `output_vid
 
-```bash
-# Clone repository
-git clone <your-repo-url>
-cd capstone
-
-# Install dependencies with uv
-uv sync
-```
+---
 
 ## Project Structure
 
 ```
-capstone/
-├── main.py                          # Quick start entry point
-├── src/                            # Source code ⭐
-│   ├── pipeline.py                 # Main pipeline script
-│   ├── team_assigner.py            # Team classification module
-│   ├── video_utils.py              # Video processing utilities
-│   └── utils.py                    # Caching utilities
-├── models/
-│   ├── Basketball-Players-17.pt    # Player/ball detector
-│   └── court-keypoints.pt          # Court keypoint detector
-├── input_videos/                   # Place input videos here
-├── runs/                           # Output videos and cache
-├── notebooks/                      # Jupyter notebooks
+basketball-video-analytics/
+├── main.py    
+├── pyproject.toml                     # Dependenci
+├── src/                               # Core source code
+│   ├── __init__.py     
+
+│   ├── trackers/
+│
+│   │   └── ball_tracker.py            # Ball detection, outlier removal, interpolation
+│   ├── team_assigner.py               # CLIP-based team classification
+│   ├── ball_acquisition_detector.py   # Algorithmic ball possession detection
+│   ├── homography.py                  # Keypoint validation and homography estimation
+│   ├── tactical_view_converter.py     # 2D court projection
+│   ├── drawers/                       # Visualization modules
+│   │   ├── player_tracks_drawer.py
+│   │   ├── ball_tracks_drawer.py
+│   │   ├── court_keypoints_drawer.py
+│   │   ├── tactical_view_drawer.py
+│   │   ├── team_ball_control_drawer.py
+│   │   └── frame_number_drawer.py
+
+│   ├── bbox_utils.py      
+│   └── utils.py                       # Pickle caching utilities
+├── models/                            # Trained model weights (download separately)
+│   ├── Basketball-Players-17.pt
+│   ├── court-keypoints.pt
+│   └── pretrained/                    # Base 
+├── input_videos/                      # Place input videos here
+├── images/
+│   └── basketball_court.png      
+├── runs/                              # Outputs
+│   ├── pipeline_output/               # Output videos
+│   └── cache/                         # Cached tracks and team assignments (.pkl)
+├── notebooks/                         # Jupyter notebooks (exploration & training)
 │   ├── 01-data-exploration.ipynb
 │   ├── 02-player-ball-detection.ipynb
-│   └── 03-court-keypoint-detection.ipynb
-├── data/                           # Training datasets
-│   ├── Basketball-Players-17/
-│   └── court-keypoints/
-├── docs/                           # Documentation
-│   ├── QUICKSTART.md              # Quick start guide
-│   ├── PIPELINE.md                # Detailed pipeline docs
-│   └── TEAM_ASSIGNMENT.md         # Team assignment details
-└── examples/                       # Example scripts
-    └── team_assignment_example.py
+│   ├── 03-court-keypoint-detection.ipynb
+│   └── pipeline_runner.ipynb
+├── data/                              # Training datasets
+│   ├── Basketball-Playe
+│   └── court-keypoints/              # Court keypoint dataset (YOLOv8-Pose format)
+└── docs/                              # Documentation and report
+    ├── final_report.md
+    ├── PIPELINE.md
+    ├── QUICKSTART.md
+    └── TEAM_ASSIGNMENT.md
 ```
 
-## Usage Examples
-
-### Basic Usage
-
-```bash
-uv run python -m src.pipeline \
-    --input input_videos/video_1.mp4 \
-    --output runs/annotated_video.mp4
-```
-
-### Custom Team Descriptions (Better Accuracy)
-
-```bash
-uv run python -m src.pipeline \
-    --input input_videos/game.mp4 \
-    --output runs/game_annotated.mp4 \
-    --team1 "white jersey with gold numbers" \
-    --team2 "navy blue jersey with white trim"
-```
-
-### Hide Info Panel
-
-```bash
-uv run python -m src.pipeline \
-    --input input_videos/video_1.mp4 \
-    --output runs/clean_output.mp4 \
-    --no-info
-```
-
-### Use as Python Module
-
-```python
-from src import BasketballAnalysisPipeline
-
-# Initialize pipeline
-pipeline = BasketballAnalysisPipeline(
-    player_model_path='models/Basketball-Players-17.pt',
-    court_model_path='models/court-keypoints.pt',
-    team_1_description='white jersey',
-    team_2_description='blue jersey'
-)
-
-# Process video
-stats = pipeline.process_video(
-    video_path='input_videos/video_1.mp4',
-    output_path='runs/output.mp4',
-    cache_dir='runs/cache',
-    show_info=True
-)
-```
-
-## Output Video Visualization
-
-The pipeline produces annotated videos with:
-
-- ⬜ **White boxes** - Team 1 players
-- 🟧 **Orange boxes** - Team 2 players
-- 🟨 **Yellow boxes** - Basketball
-- 🟪 **Magenta boxes** - Ball carrier
-- 🟡 **Yellow circles** - Court keypoints
-- 📊 **Info panel** (optional) - Frame stats in top-right
-
-## Documentation
-
-- [Quick Start Guide](docs/QUICKSTART.md) - Get started quickly
-- [Pipeline Documentation](docs/PIPELINE.md) - Detailed usage guide
-- [Team Assignment](docs/TEAM_ASSIGNMENT.md) - How team classification works
-- [Project Instructions](.github/copilot-instructions.md) - Project context
-
-## Models
-
-### Player & Ball Detection (`Basketball-Players-17.pt`)
-- **Architecture**: YOLOv8
-- **Classes**: player, ball, ball_carrier
-- **Training**: Fine-tuned on basketball-specific dataset
-- **Performance**: Real-time inference (~30 FPS on GPU)
-
-### Court Keypoint Detection (`court-keypoints.pt`)
-- **Architecture**: YOLOv8-Pose
-- **Output**: Court boundary points and key locations
-- **Use Case**: Spatial mapping and 2D court transformation
-
-### Team Classification
-- **Model**: CLIP (fashion-clip variant from HuggingFace)
-- **Method**: Text-image matching for jersey appearance
-- **Downloads**: Automatically on first use (~1GB)
-- **Caching**: Results cached for performance
-
-## Performance
-
-| Metric | First Run | Cached Run |
-|--------|-----------|------------|
-| **Processing Speed** | 2-5 sec/frame | 0.5-1 sec/frame |
-| **GPU Memory** | ~2-4 GB | ~1-2 GB |
-| **Model Loading** | ~30 sec | ~5 sec |
-
-*Tested on NVIDIA GPU. CPU processing is 5-10x slower.*
-
-## Requirements
-
-- Python 3.12+
-- CUDA-compatible GPU (recommended)
-- ~5GB disk space for models and dependencies
-
-### Key Dependencies
-
-- `ultralytics` - YOLO models
-- `transformers` - CLIP model for team assignment
-- `opencv-python` - Video processing
-- `torch` - PyTorch backend
-- `pillow` - Image processing
-
-## Development
-
-### Training Models
-
-See Jupyter notebooks in `notebooks/`:
-- [Player Detection Training](notebooks/02-player-ball-detection.ipynb)
-- [Court Keypoint Training](notebooks/03-court-keypoint-detection.ipynb)
-
-### Running Examples
-
-```bash
-# Run team assignment example
-uv run python examples/team_assignment_example.py
-
-# Run main pipeline with defaults
-uv run python main.py
-```
+---
 
 ## Troubleshooting
 
-**Pipeline runs slowly?**
-- Ensure GPU is available: `torch.cuda.is_available()`
-- Enable caching with `--cache-dir` (enabled by default)
-- Process shorter video clips for testing
+**"Input video not found" error**
+- Ensure your video is placed in `input_videos/` and the filename in `main.py` matches exactly.
 
-**Poor team classification?**
-- Use more specific jersey descriptions
-- Ensure jersey colors are visually distinct
-- Check that lighting is consistent
+**"Model not found" error**
+- Download the model weights from the Google Drive link above and place them in `models/`.
 
-**Out of memory?**
-- Reduce video resolution
-- Process fewer frames at a time
-- Close other GPU applications
+**Pipeline is very slow**
+- Check GPU availability: `python -c "import torch; print(torch.cuda.is_available())"`
+- CPU-only processing is 5-10x slower than GPU.
+- Caching is enabled by default — the second run on the same video 
 
-## Future Work
+**Poor team classification**
+- Use more descriptive jersey text (color, trim, numbers).
+- Delete
 
-- [ ] 2D court coordinate transformation
-- [ ] Player tracking with consistent IDs across frames
-- [ ] Spatial analytics (player spacing, heat maps)
-- [ ] Shot quality and player gravity metrics
-- [ ] Real-time streaming support
+**CLIP model downloading on fi
 
-## Project Context
 
-This project develops a computer vision system for automated basketball video analysis that captures spatial and off-ball dynamics not available in traditional box scores. See [project instructions](.github/copilot-instructions.md) for full context.
+**Out of memory**
+- Close 
+- Process a shorter video clip for testing.
 
-## License
-
-[Add your license here]
+---
 
 ## Acknowledgments
 
-- YOLO models from Ultralytics
-- CLIP model from HuggingFace
-- Basketball datasets from Roboflow
+- [Ultralytics](https://github.com/ult
+- [Roboflow Supervision](https://github.com/roboflow/supervision) — ByteTrack implementation
+- [HuggingFace Transformers](https://github.com/huggingface/transformers) — CLIP model
+- [OpenCV
+
