@@ -80,7 +80,7 @@ pip install uv
 
 The trained model weights and a sample input video are hosted on Google Drive since they are too large for the repository.
 
-**Google Drive link:** https://drive.google.com/drive/folders/PLACEHOLDER_LINK
+**Google Drive link:** https://drive.google.com/drive/u/1/folders/1oBlI9mgDUCCAup_HQz0ozvzkKqaC20HR
 
 
 Download the following files and place them in the correct locations:

@@ -48,7 +48,7 @@ pipeline from scratch.
   The trained model weights and sample input videos are too large for the
   repository and are hosted on Google Drive:
 
-    https://drive.google.com/drive/folders/PLACEHOLDER_LINK
+    https://drive.google.com/drive/u/1/folders/1oBlI9mgDUCCAup_HQz0ozvzkKqaC20HR
 
   (Replace the link above with the actual shared folder URL.)
 
